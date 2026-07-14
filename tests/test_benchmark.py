@@ -78,6 +78,21 @@ class TestBayesianBenchmarkCompare:
         with pytest.raises(ValueError):
             BayesianBenchmark(skip_threshold=0.1)
 
+    def test_winner_uses_configured_confidence(self):
+        bench = BayesianBenchmark(confidence=0.9999, skip_threshold=0.999, min_samples=3)
+        result = bench.compare(
+            model_a=perfect_model,
+            model_b=random_model,
+            score_fn=score,
+            dataset=PROBLEMS,
+            name="custom_confidence",
+        )
+
+        assert result.confidence == 0.9999
+        assert result.p_a_beats_b < result.confidence
+        assert result.winner is None
+        assert result.to_dict()["confidence"] == 0.9999
+
 
 # ---------------------------------------------------------------------------
 # BayesianBenchmark.task decorator + run()
