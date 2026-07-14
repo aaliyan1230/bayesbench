@@ -154,6 +154,31 @@ class TestRankingCorrectness:
         # Last-ranked has no p_beats_next
         assert result.rankings[-1].p_beats_next is None
 
+    def test_skip_threshold_allows_tied_pairs_to_converge(self):
+        ranker = BayesianRanker(confidence=0.95, skip_threshold=0.85, min_samples=5)
+        ranker.add_model("a", perfect_model)
+        ranker.add_model("b", perfect_model)
+
+        result = ranker.rank(PROBLEMS, score_fn=score)
+
+        assert result.converged is True
+        assert result.problems_tested == 5
+        assert result.rankings[0].p_beats_next == pytest.approx(0.5)
+
+    def test_skip_threshold_one_requires_decisive_pairs(self):
+        ranker = BayesianRanker(confidence=0.95, skip_threshold=1.0, min_samples=5)
+        ranker.add_model("a", perfect_model)
+        ranker.add_model("b", perfect_model)
+
+        result = ranker.rank(PROBLEMS, score_fn=score)
+
+        assert result.converged is False
+        assert result.problems_tested == len(PROBLEMS)
+
+    def test_invalid_skip_threshold_raises(self):
+        with pytest.raises(ValueError):
+            BayesianRanker(skip_threshold=0.5)
+
 
 # ---------------------------------------------------------------------------
 # Custom posterior
@@ -243,3 +268,14 @@ class TestAsyncRanking:
         ranker.add_model("terrible", async_terrible)
         result = await ranker.rank_async(PROBLEMS, score_fn=score)
         assert result.rankings[0].name == "perfect"
+
+    @pytest.mark.asyncio
+    async def test_async_skip_threshold_one_requires_decisive_pairs(self):
+        ranker = BayesianRanker(confidence=0.95, skip_threshold=1.0, min_samples=5)
+        ranker.add_model("a", perfect_model)
+        ranker.add_model("b", perfect_model)
+
+        result = await ranker.rank_async(PROBLEMS, score_fn=score)
+
+        assert result.converged is False
+        assert result.problems_tested == len(PROBLEMS)
