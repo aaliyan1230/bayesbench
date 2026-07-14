@@ -250,6 +250,8 @@ class BayesianBenchmark:
         return self._posterior_factory()
 
     def _is_non_discriminating(self, pa: Posterior, pb: Posterior) -> bool:
+        if self.skip_threshold >= 1.0:
+            return False
         p = pa.prob_beats(pb)
         return (1.0 - self.skip_threshold) < p < self.skip_threshold
 

@@ -28,6 +28,7 @@ A typical decision rule is:
 
 - Skips tasks that appear non-discriminating between models.
 - Helps avoid spending budget on tasks unlikely to change decisions.
+- Set to `1.0` to disable skipping and evaluate the full dataset.
 
 ## Choosing a posterior
 
