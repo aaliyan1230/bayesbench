@@ -28,8 +28,12 @@ def is_non_discriminating(
 ) -> bool:
     """Return True when a task cannot distinguish between the two models.
 
+    Set ``threshold=1.0`` to disable non-discriminating detection.
+
     Thin wrapper kept for backward compatibility.
     """
+    if threshold >= 1.0:
+        return False
     p = posterior_a.prob_beats(posterior_b)
     return (1.0 - threshold) < p < threshold
 

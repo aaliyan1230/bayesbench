@@ -55,6 +55,19 @@ class TestBayesianBenchmarkCompare:
         )
         assert result.skipped or result.winner is None
 
+    def test_skip_threshold_one_disables_skipping(self):
+        bench = BayesianBenchmark(confidence=0.95, skip_threshold=1.0, min_samples=3)
+        result = bench.compare(
+            model_a=perfect_model,
+            model_b=perfect_model,
+            score_fn=score,
+            dataset=PROBLEMS,
+            name="no_skip",
+        )
+
+        assert not result.skipped
+        assert result.problems_tested == len(PROBLEMS)
+
     def test_result_type(self):
         bench = BayesianBenchmark()
         result = bench.compare(perfect_model, random_model, score, PROBLEMS)
@@ -77,6 +90,21 @@ class TestBayesianBenchmarkCompare:
     def test_invalid_skip_threshold_raises(self):
         with pytest.raises(ValueError):
             BayesianBenchmark(skip_threshold=0.1)
+
+    def test_winner_uses_configured_confidence(self):
+        bench = BayesianBenchmark(confidence=0.9999, skip_threshold=0.999, min_samples=3)
+        result = bench.compare(
+            model_a=perfect_model,
+            model_b=random_model,
+            score_fn=score,
+            dataset=PROBLEMS,
+            name="custom_confidence",
+        )
+
+        assert result.confidence == 0.9999
+        assert result.p_a_beats_b < result.confidence
+        assert result.winner is None
+        assert result.to_dict()["confidence"] == 0.9999
 
 
 # ---------------------------------------------------------------------------

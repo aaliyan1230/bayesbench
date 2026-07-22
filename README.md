@@ -304,6 +304,7 @@ BayesianRanker(
 | `.problems_tested` | `int` | Problems evaluated before stopping |
 | `.total_problems` | `int` | Dataset size |
 | `.p_a_beats_b` | `float` | Final P(A > B) |
+| `.confidence` | `float` | Confidence threshold used to declare a winner |
 | `.posterior_a`, `.posterior_b` | `Posterior` | Final posteriors |
 | `.skipped` | `bool` | True if task was non-discriminating |
 | `.to_dict()` | `dict` | Serialise to plain dict |

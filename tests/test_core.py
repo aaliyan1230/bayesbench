@@ -112,3 +112,7 @@ class TestIsNonDiscriminating:
         b = BetaPosterior(alpha=8, beta=12)
         # With a tight threshold, these may look discriminating
         assert not is_non_discriminating(a, b, threshold=0.6)
+
+    def test_threshold_one_disables_detection(self):
+        equal = BetaPosterior(alpha=10, beta=5)
+        assert not is_non_discriminating(equal, equal, threshold=1.0)

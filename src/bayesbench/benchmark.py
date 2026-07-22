@@ -37,17 +37,19 @@ class TaskResult:
     posterior_b: Posterior
     p_a_beats_b: float
     skipped: bool = False
+    confidence: float = 0.95
 
     @property
     def winner(self) -> str | None:
         """'model_a', 'model_b', or None (inconclusive).
 
-        Uses the confidence threshold baked into p_a_beats_b; a result is
-        declared only when p ≥ 0.95 or p ≤ 0.05.
+        Uses the confidence threshold configured for the benchmark that
+        produced this result. A result is declared only when p is at least
+        ``confidence`` or at most ``1 - confidence``.
         """
-        if self.p_a_beats_b >= 0.95:
+        if self.p_a_beats_b >= self.confidence:
             return "model_a"
-        if self.p_a_beats_b <= 0.05:
+        if self.p_a_beats_b <= (1.0 - self.confidence):
             return "model_b"
         return None
 
@@ -77,6 +79,7 @@ class TaskResult:
             "total_problems": self.total_problems,
             "efficiency": self.efficiency,
             "p_a_beats_b": self.p_a_beats_b,
+            "confidence": self.confidence,
             "winner": self.winner,
             "skipped": self.skipped,
             "mean_a": self.posterior_a.mean,
@@ -247,6 +250,8 @@ class BayesianBenchmark:
         return self._posterior_factory()
 
     def _is_non_discriminating(self, pa: Posterior, pb: Posterior) -> bool:
+        if self.skip_threshold >= 1.0:
+            return False
         p = pa.prob_beats(pb)
         return (1.0 - self.skip_threshold) < p < self.skip_threshold
 
@@ -377,7 +382,16 @@ class BayesianBenchmark:
                     len(problems),
                     p,
                 )
-                return TaskResult(name, tested, len(problems), post_a, post_b, p, skipped=True)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    skipped=True,
+                    confidence=self.confidence,
+                )
 
             stop, p = self._stopping(post_a, post_b)
             if stop:
@@ -389,7 +403,15 @@ class BayesianBenchmark:
                     p,
                     "model_a" if p >= self.confidence else "model_b",
                 )
-                return TaskResult(name, tested, len(problems), post_a, post_b, p)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    confidence=self.confidence,
+                )
 
         p = post_a.prob_beats(post_b)
         _log.info(
@@ -398,7 +420,15 @@ class BayesianBenchmark:
             len(problems),
             p,
         )
-        return TaskResult(name, len(problems), len(problems), post_a, post_b, p)
+        return TaskResult(
+            name,
+            len(problems),
+            len(problems),
+            post_a,
+            post_b,
+            p,
+            confidence=self.confidence,
+        )
 
     async def compare_async(
         self,
@@ -440,14 +470,39 @@ class BayesianBenchmark:
 
             if self._is_non_discriminating(post_a, post_b):
                 p = post_a.prob_beats(post_b)
-                return TaskResult(name, tested, len(problems), post_a, post_b, p, skipped=True)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    skipped=True,
+                    confidence=self.confidence,
+                )
 
             stop, p = self._stopping(post_a, post_b)
             if stop:
-                return TaskResult(name, tested, len(problems), post_a, post_b, p)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    confidence=self.confidence,
+                )
 
         p = post_a.prob_beats(post_b)
-        return TaskResult(name, len(problems), len(problems), post_a, post_b, p)
+        return TaskResult(
+            name,
+            len(problems),
+            len(problems),
+            post_a,
+            post_b,
+            p,
+            confidence=self.confidence,
+        )
 
     # ------------------------------------------------------------------
     # Run all registered tasks
@@ -529,14 +584,39 @@ class BayesianBenchmark:
 
             if self._is_non_discriminating(post_a, post_b):
                 p = post_a.prob_beats(post_b)
-                return TaskResult(name, tested, len(problems), post_a, post_b, p, skipped=True)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    skipped=True,
+                    confidence=self.confidence,
+                )
 
             stop, p = self._stopping(post_a, post_b)
             if stop:
-                return TaskResult(name, tested, len(problems), post_a, post_b, p)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    confidence=self.confidence,
+                )
 
         p = post_a.prob_beats(post_b)
-        return TaskResult(name, len(problems), len(problems), post_a, post_b, p)
+        return TaskResult(
+            name,
+            len(problems),
+            len(problems),
+            post_a,
+            post_b,
+            p,
+            confidence=self.confidence,
+        )
 
     async def _run_task_async(self, task_def: dict[str, Any]) -> TaskResult:
         fn = task_def["fn"]
@@ -564,11 +644,36 @@ class BayesianBenchmark:
 
             if self._is_non_discriminating(post_a, post_b):
                 p = post_a.prob_beats(post_b)
-                return TaskResult(name, tested, len(problems), post_a, post_b, p, skipped=True)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    skipped=True,
+                    confidence=self.confidence,
+                )
 
             stop, p = self._stopping(post_a, post_b)
             if stop:
-                return TaskResult(name, tested, len(problems), post_a, post_b, p)
+                return TaskResult(
+                    name,
+                    tested,
+                    len(problems),
+                    post_a,
+                    post_b,
+                    p,
+                    confidence=self.confidence,
+                )
 
         p = post_a.prob_beats(post_b)
-        return TaskResult(name, len(problems), len(problems), post_a, post_b, p)
+        return TaskResult(
+            name,
+            len(problems),
+            len(problems),
+            post_a,
+            post_b,
+            p,
+            confidence=self.confidence,
+        )

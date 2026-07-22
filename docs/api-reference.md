@@ -47,6 +47,7 @@ BayesianRanker(
 |---|---|
 | `winner` | `"model_a"`, `"model_b"`, or `None` |
 | `p_a_beats_b` | Posterior probability that A beats B |
+| `confidence` | Confidence threshold used to declare a winner |
 | `efficiency` | Fraction of evaluations saved |
 | `problems_tested` | Number of evaluated problems |
 | `total_problems` | Total dataset size |
