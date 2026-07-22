@@ -226,6 +226,8 @@ class BayesianRanker:
     ) -> None:
         if not (0.5 < confidence <= 1.0):
             raise ValueError("confidence must be in (0.5, 1.0]")
+        if not (0.5 < skip_threshold <= 1.0):
+            raise ValueError("skip_threshold must be in (0.5, 1.0]")
         self.confidence = confidence
         self.skip_threshold = skip_threshold
         self.min_samples = min_samples
@@ -396,11 +398,14 @@ class BayesianRanker:
         return sorted(posteriors, key=lambda n: posteriors[n].mean, reverse=True)
 
     def _ranking_converged(self, posteriors: dict[str, Posterior]) -> bool:
-        """Return True when all consecutive ranked pairs are decided."""
+        """Return True when all consecutive ranked pairs are decided or tied."""
         names = self._sorted_names(posteriors)
         for k in range(len(names) - 1):
             p = posteriors[names[k]].prob_beats(posteriors[names[k + 1]])
-            if p < self.confidence:
+            tied = self.skip_threshold < 1.0 and (
+                (1.0 - self.skip_threshold) < p < self.skip_threshold
+            )
+            if p < self.confidence and not tied:
                 return False
         return True
 
