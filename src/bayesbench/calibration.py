@@ -1,0 +1,419 @@
+"""Simulation harness for calibrating stopping-policy decision quality.
+
+Evaluates false-decision rates, order sensitivity, and expected sample counts
+across synthetic effect sizes. Use this to find safe defaults before teaching
+or publishing performance claims.
+"""
+
+from __future__ import annotations
+
+import itertools
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from .benchmark import BayesianBenchmark
+from .posteriors.base import Posterior
+from .posteriors.beta import BetaPosterior
+
+# ---------------------------------------------------------------------------
+# Result types
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CalibrationPoint:
+    """Single row in a calibration sweep."""
+
+    min_samples: int
+    skip_threshold: float
+    confidence: float
+    n_runs: int
+    false_winner_rate: float
+    skipped_rate: float
+    inconclusive_rate: float
+    expected_samples: float
+    possible_max_samples: int
+    # Decision-rate breakdown
+    correct_winner_rate: float = 0.0
+    false_superiority_rate: float = 0.0
+
+    def __str__(self) -> str:
+        return (
+            f"min={self.min_samples} skip={self.skip_threshold:.2f} "
+            f"conf={self.confidence:.2f}  "
+            f"false_winner={self.false_winner_rate:.1%}  "
+            f"skipped={self.skipped_rate:.1%}  "
+            f"inconclusive={self.inconclusive_rate:.1%}  "
+            f"E[samples]={self.expected_samples:.1f}/{self.possible_max_samples}"
+        )
+
+
+@dataclass
+class CalibrationReport:
+    """Results of a calibration sweep."""
+
+    params_label: str
+    points: list[CalibrationPoint]
+
+    def format_table(self) -> str:
+        header = (
+            f"{'min_s':>6} {'skip':>6} {'conf':>6} "
+            f"{'false':>8} {'skip%':>8} {'incon':>8} {'E[n]':>8}"
+        )
+        rows = [header, "-" * len(header)]
+        for p in self.points:
+            rows.append(
+                f"{p.min_samples:>6} {p.skip_threshold:>6.2f} {p.confidence:>6.2f} "
+                f"{p.false_winner_rate:>7.1%} {p.skipped_rate:>7.1%} "
+                f"{p.inconclusive_rate:>7.1%} {p.expected_samples:>7.1f}"
+            )
+        return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Exact enumeration
+# ---------------------------------------------------------------------------
+
+
+def enumerate_binary_outcomes(
+    n: int, success_prob_a: float = 0.5, success_prob_b: float = 0.5
+) -> dict[str, Any]:
+    """Exact enumeration of all 4^n pairwise binary outcome sequences.
+
+    Each trial produces four possible pairs: (A=T,B=T), (A=T,B=F),
+    (A=F,B=T), (A=F,B=F). With n=3, this gives 4^3 = 64 equally likely
+    sequences under equal models. The function classifies how each
+    sequence is handled by the current default stopping rules.
+    """
+    outcomes = [(True, True), (True, False), (False, True), (False, False)]
+    sequences = list(itertools.product(outcomes, repeat=n))
+    decisions: list[str] = []
+    probabilities: list[float] = []
+
+    bench = BayesianBenchmark(
+        confidence=0.95, skip_threshold=0.85, min_samples=3
+    )
+    factory = bench._posterior_factory
+
+    for seq_pairs in sequences:
+        post_a = factory()
+        post_b = factory()
+        for j, (val_a, val_b) in enumerate(seq_pairs):
+            post_a.observe_one(val_a)
+            post_b.observe_one(val_b)
+            tested = j + 1
+            if tested < 3:
+                continue
+            p = post_a.prob_beats(post_b)
+            if 0.85 < 1.0 and 0.15 < p < 0.85:
+                decisions.append("skipped")
+                break
+            if p >= 0.95:
+                decisions.append("winner_a")
+                break
+            if p <= 0.05:
+                decisions.append("winner_b")
+                break
+        else:
+            decisions.append("inconclusive")
+
+        seq_prob = 1.0
+        for val_a, val_b in seq_pairs:
+            pa = success_prob_a if val_a else (1.0 - success_prob_a)
+            pb = success_prob_b if val_b else (1.0 - success_prob_b)
+            seq_prob *= pa * pb
+        probabilities.append(seq_prob)
+
+    total_prob = sum(probabilities)
+    skipped_prob = sum(
+        p for p, d in zip(probabilities, decisions) if d == "skipped"
+    )
+    winner_prob = sum(
+        p for p, d in zip(probabilities, decisions)
+        if d in ("winner_a", "winner_b")
+    )
+    incon_prob = sum(
+        p for p, d in zip(probabilities, decisions) if d == "inconclusive"
+    )
+
+    return {
+        "sequences": list(zip(sequences, decisions, probabilities)),
+        "n": n,
+        "success_prob_a": success_prob_a,
+        "success_prob_b": success_prob_b,
+        "skipped_rate": skipped_prob / total_prob if total_prob > 0 else 0.0,
+        "winner_rate": winner_prob / total_prob if total_prob > 0 else 0.0,
+        "inconclusive_rate": incon_prob / total_prob if total_prob > 0 else 0.0,
+        "total_sequences": len(sequences),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Monte Carlo simulation
+# ---------------------------------------------------------------------------
+
+
+def simulate_pairwise(
+    n: int = 10_000,
+    true_acc_a: float = 0.5,
+    true_acc_b: float = 0.5,
+    rng: np.random.Generator | int | None = None,
+    confidence: float = 0.95,
+    skip_threshold: float = 0.85,
+    min_samples: int = 3,
+    max_samples: int = 500,
+    posterior_factory: Callable[[], Posterior] | None = None,
+) -> dict[str, Any]:
+    """Monte Carlo simulation of the pairwise stopping policy.
+
+    Simulates *n* independent runs of the binary stopping loop. Each run draws
+    Bernoulli outcomes from the true per-model accuracies. Reports empirical
+    decision rates and expected sample counts.
+
+    Args:
+        n: Number of simulation runs.
+        true_acc_a: True Bernoulli parameter for model A.
+        true_acc_b: True Bernoulli parameter for model B.
+        rng: Seed or pre-instantiated Generator.
+        confidence: Stopping confidence threshold.
+        skip_threshold: Non-discrimination skip window.
+        min_samples: Minimum evaluations before any early stopping.
+        posterior_factory: Posterior factory (default BetaPosterior).
+
+    Returns:
+        Dict with decision counts, rates, and per-run samples drawn.
+    """
+    if isinstance(rng, int):
+        rng = np.random.default_rng(rng)
+    elif rng is None:
+        rng = np.random.default_rng()
+
+    winner_a = 0
+    winner_b = 0
+    skipped = 0
+    inconclusive = 0
+    false_decisions = 0
+    samples_drawn: list[int] = []
+
+    factory: Callable[[], Posterior] = posterior_factory or BetaPosterior
+
+    for _ in range(n):
+        post_a = factory()
+        post_b = factory()
+
+        for j in range(max_samples):
+            val_a = rng.random() < true_acc_a
+            val_b = rng.random() < true_acc_b
+            post_a.observe_one(val_a)
+            post_b.observe_one(val_b)
+            tested = j + 1
+
+            if tested < min_samples:
+                continue
+
+            p = post_a.prob_beats(post_b)
+            if skip_threshold < 1.0 and (1.0 - skip_threshold) < p < skip_threshold:
+                skipped += 1
+                samples_drawn.append(tested)
+                break
+
+            if p >= confidence:
+                winner_a += 1
+                samples_drawn.append(tested)
+                if true_acc_a <= true_acc_b:
+                    false_decisions += 1
+                break
+            if p <= (1.0 - confidence):
+                winner_b += 1
+                samples_drawn.append(tested)
+                if true_acc_b <= true_acc_a:
+                    false_decisions += 1
+                break
+        else:
+            p = post_a.prob_beats(post_b)
+            if p >= confidence:
+                winner_a += 1
+                if true_acc_a <= true_acc_b:
+                    false_decisions += 1
+            elif p <= (1.0 - confidence):
+                winner_b += 1
+                if true_acc_b <= true_acc_a:
+                    false_decisions += 1
+            else:
+                inconclusive += 1
+            samples_drawn.append(max_samples)
+
+    return {
+        "winner_a": winner_a,
+        "winner_b": winner_b,
+        "skipped": skipped,
+        "inconclusive": inconclusive,
+        "samples_drawn": samples_drawn,
+        "false_decisions": false_decisions,
+        "runs": n,
+        "true_acc_a": true_acc_a,
+        "true_acc_b": true_acc_b,
+        "params": {
+            "confidence": confidence,
+            "skip_threshold": skip_threshold,
+            "min_samples": min_samples,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Order-sensitivity test
+# ---------------------------------------------------------------------------
+
+
+def simulate_order_sensitivity(
+    favorable_front: int = 3,
+    unfavorable_after: int = 100,
+    n_runs: int = 1_000,
+    rng: np.random.Generator | int | None = None,
+) -> dict[str, Any]:
+    """Test whether dataset order can flip the decision.
+
+    Simulates a dataset where the first *favorable_front* problems are easy
+    for model A (always correct) and the rest are hard (always wrong). If
+    the stopping rule fires after the favorable front, model A wins despite
+    being wrong on the majority of the dataset.
+    """
+    if isinstance(rng, int):
+        rng = np.random.default_rng(rng)
+    elif rng is None:
+        rng = np.random.default_rng()
+
+    bench = BayesianBenchmark()
+    factory = bench._posterior_factory
+
+    early_wins = 0
+    total_samples: list[int] = []
+
+    for _ in range(n_runs):
+        post_a = factory()
+        post_b = factory()
+
+        # Phase 1: favorable to A, both equal on these
+        for _ in range(favorable_front):
+            post_a.observe_one(True)
+            post_b.observe_one(False)
+
+        # Check after favorable front
+        p = post_a.prob_beats(post_b)
+        if p >= bench.confidence:
+            early_wins += 1
+            total_samples.append(favorable_front)
+            continue
+
+        # Phase 2: unfavorable to A
+        samples = favorable_front
+        for _ in range(unfavorable_after):
+            post_a.observe_one(False)
+            post_b.observe_one(True)
+            samples += 1
+            if samples < bench.min_samples:
+                continue
+            p = post_a.prob_beats(post_b)
+            if bench._is_non_discriminating(post_a, post_b):
+                break
+            stop, _ = bench._stopping(post_a, post_b)
+            if stop:
+                break
+        total_samples.append(samples)
+
+    return {
+        "favorable_front": favorable_front,
+        "unfavorable_after": unfavorable_after,
+        "n_runs": n_runs,
+        "early_wins": early_wins,
+        "early_win_rate": early_wins / n_runs,
+        "mean_samples": float(np.mean(total_samples)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Calibration sweep
+# ---------------------------------------------------------------------------
+
+
+def calibrate_sweep(
+    min_samples_grid: Sequence[int] = (3, 5, 10, 20, 50),
+    skip_threshold_grid: Sequence[float] = (0.85, 0.95, 0.99, 1.0),
+    confidence: float = 0.95,
+    true_acc_a: float = 0.5,
+    true_acc_b: float = 0.5,
+    n_runs: int = 5_000,
+    possible_max: int = 100,
+    seed: int = 42,
+) -> CalibrationReport:
+    """Run a full calibration sweep across parameter grids.
+
+    Returns a CalibrationReport with one CalibrationPoint per grid cell.
+    """
+    rng = np.random.default_rng(seed)
+    points: list[CalibrationPoint] = []
+
+    for min_s in min_samples_grid:
+        for skip in skip_threshold_grid:
+            result = simulate_pairwise(
+                n=n_runs,
+                true_acc_a=true_acc_a,
+                true_acc_b=true_acc_b,
+                confidence=confidence,
+                skip_threshold=skip,
+                min_samples=min_s,
+                max_samples=possible_max,
+                rng=rng,
+            )
+
+            total_decisions = sum(
+                result[key]
+                for key in ("winner_a", "winner_b", "skipped", "inconclusive")
+            )
+            false_rate = (
+                result["false_decisions"] / total_decisions
+                if total_decisions > 0
+                else 0.0
+            )
+            skip_rate = result["skipped"] / total_decisions if total_decisions > 0 else 0.0
+            incon_rate = (
+                result["inconclusive"] / total_decisions
+                if total_decisions > 0
+                else 0.0
+            )
+            win_total = result["winner_a"] + result["winner_b"]
+            correct_win_rate = (
+                (win_total - result["false_decisions"]) / total_decisions
+                if total_decisions > 0
+                else 0.0
+            )
+
+            points.append(
+                CalibrationPoint(
+                    min_samples=min_s,
+                    skip_threshold=skip,
+                    confidence=confidence,
+                    n_runs=n_runs,
+                    false_winner_rate=false_rate,
+                    skipped_rate=skip_rate,
+                    inconclusive_rate=incon_rate,
+                    expected_samples=(
+                        float(np.mean(result["samples_drawn"]))
+                        if result["samples_drawn"]
+                        else 0.0
+                    ),
+                    possible_max_samples=possible_max,
+                    correct_winner_rate=correct_win_rate,
+                    false_superiority_rate=false_rate,
+                )
+            )
+
+    label = (
+        f"true_A={true_acc_a:.2f} true_B={true_acc_b:.2f} "
+        f"conf={confidence:.2f} n={n_runs}"
+    )
+    return CalibrationReport(params_label=label, points=points)
