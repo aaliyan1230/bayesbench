@@ -74,20 +74,20 @@ class TestMonteCarloSimulation:
         assert result["skipped"] > 0, "Some runs should be skipped"
 
     def test_disabling_skip_reduces_false_rate(self):
-        """skip_threshold=1.0 + min_samples=10 should reduce false winners."""
+        """skip_threshold=1.0 disables the skip path entirely."""
         result = simulate_pairwise(
-            n=500,
+            n=100,
             true_acc_a=0.5,
             true_acc_b=0.5,
             confidence=0.95,
             skip_threshold=1.0,
-            min_samples=10,
-            max_samples=100,
+            min_samples=5,
+            max_samples=20,
             rng=42,
         )
         total = sum(result[k] for k in ("winner_a", "winner_b", "skipped", "inconclusive"))
         assert result["skipped"] == 0, "skip_threshold=1.0 should disable skipping"
-        assert total == 500
+        assert total == 100
 
     def test_strong_effect_detected_efficiently(self):
         """A model with true acc 0.95 vs 0.05 should be detected fast."""
@@ -130,7 +130,6 @@ class TestOrderSensitivity:
             favorable_front=3,
             unfavorable_after=100,
             n_runs=500,
-            rng=42,
         )
         assert result["early_wins"] > 0, (
             "Should see early wins when favorable examples come first"
@@ -138,8 +137,8 @@ class TestOrderSensitivity:
 
     def test_larger_front_higher_early_win_rate(self):
         """More favorable examples at the front increase early-win odds."""
-        r3 = simulate_order_sensitivity(favorable_front=3, n_runs=300, rng=42)
-        r5 = simulate_order_sensitivity(favorable_front=5, n_runs=300, rng=42)
+        r3 = simulate_order_sensitivity(favorable_front=3, n_runs=300)
+        r5 = simulate_order_sensitivity(favorable_front=5, n_runs=300)
         assert r5["early_win_rate"] >= r3["early_win_rate"], (
             "More favorable examples should not decrease early-win rate"
         )

@@ -36,9 +36,6 @@ class CalibrationPoint:
     inconclusive_rate: float
     expected_samples: float
     possible_max_samples: int
-    # Decision-rate breakdown
-    correct_winner_rate: float = 0.0
-    false_superiority_rate: float = 0.0
 
     def __str__(self) -> str:
         return (
@@ -61,7 +58,7 @@ class CalibrationReport:
     def format_table(self) -> str:
         header = (
             f"{'min_s':>6} {'skip':>6} {'conf':>6} "
-            f"{'false':>8} {'skip%':>8} {'incon':>8} {'E[n]':>8}"
+            f"{'false':>7} {'skip%':>7} {'incon':>7} {'E[n]':>7}"
         )
         rows = [header, "-" * len(header)]
         for p in self.points:
@@ -79,14 +76,19 @@ class CalibrationReport:
 
 
 def enumerate_binary_outcomes(
-    n: int, success_prob_a: float = 0.5, success_prob_b: float = 0.5
+    n: int,
+    success_prob_a: float = 0.5,
+    success_prob_b: float = 0.5,
+    confidence: float = 0.95,
+    skip_threshold: float = 0.85,
+    min_samples: int = 3,
 ) -> dict[str, Any]:
     """Exact enumeration of all 4^n pairwise binary outcome sequences.
 
     Each trial produces four possible pairs: (A=T,B=T), (A=T,B=F),
-    (A=F,B=T), (A=F,B=F). With n=3, this gives 4^3 = 64 equally likely
+    (A=F,B=T), (A=F,B=F). With n=3 this gives 4^3 = 64 equally likely
     sequences under equal models. The function classifies how each
-    sequence is handled by the current default stopping rules.
+    sequence is handled by the stopping rules.
     """
     outcomes = [(True, True), (True, False), (False, True), (False, False)]
     sequences = list(itertools.product(outcomes, repeat=n))
@@ -94,7 +96,7 @@ def enumerate_binary_outcomes(
     probabilities: list[float] = []
 
     bench = BayesianBenchmark(
-        confidence=0.95, skip_threshold=0.85, min_samples=3
+        confidence=confidence, skip_threshold=skip_threshold, min_samples=min_samples
     )
     factory = bench._posterior_factory
 
@@ -105,17 +107,14 @@ def enumerate_binary_outcomes(
             post_a.observe_one(val_a)
             post_b.observe_one(val_b)
             tested = j + 1
-            if tested < 3:
+            if tested < min_samples:
                 continue
-            p = post_a.prob_beats(post_b)
-            if 0.85 < 1.0 and 0.15 < p < 0.85:
+            if bench._is_non_discriminating(post_a, post_b):
                 decisions.append("skipped")
                 break
-            if p >= 0.95:
-                decisions.append("winner_a")
-                break
-            if p <= 0.05:
-                decisions.append("winner_b")
+            stop, p = bench._stopping(post_a, post_b)
+            if stop:
+                decisions.append("winner_a" if p >= confidence else "winner_b")
                 break
         else:
             decisions.append("inconclusive")
@@ -191,6 +190,10 @@ def simulate_pairwise(
     elif rng is None:
         rng = np.random.default_rng()
 
+    bench = BayesianBenchmark(
+        confidence=confidence, skip_threshold=skip_threshold, min_samples=min_samples
+    )
+
     winner_a = 0
     winner_b = 0
     skipped = 0
@@ -214,36 +217,25 @@ def simulate_pairwise(
             if tested < min_samples:
                 continue
 
-            p = post_a.prob_beats(post_b)
-            if skip_threshold < 1.0 and (1.0 - skip_threshold) < p < skip_threshold:
+            if bench._is_non_discriminating(post_a, post_b):
                 skipped += 1
                 samples_drawn.append(tested)
                 break
 
-            if p >= confidence:
-                winner_a += 1
+            stop, p = bench._stopping(post_a, post_b)
+            if stop:
+                if p >= confidence:
+                    winner_a += 1
+                    if true_acc_a <= true_acc_b:
+                        false_decisions += 1
+                else:
+                    winner_b += 1
+                    if true_acc_b <= true_acc_a:
+                        false_decisions += 1
                 samples_drawn.append(tested)
-                if true_acc_a <= true_acc_b:
-                    false_decisions += 1
-                break
-            if p <= (1.0 - confidence):
-                winner_b += 1
-                samples_drawn.append(tested)
-                if true_acc_b <= true_acc_a:
-                    false_decisions += 1
                 break
         else:
-            p = post_a.prob_beats(post_b)
-            if p >= confidence:
-                winner_a += 1
-                if true_acc_a <= true_acc_b:
-                    false_decisions += 1
-            elif p <= (1.0 - confidence):
-                winner_b += 1
-                if true_acc_b <= true_acc_a:
-                    false_decisions += 1
-            else:
-                inconclusive += 1
+            inconclusive += 1
             samples_drawn.append(max_samples)
 
     return {
@@ -273,7 +265,6 @@ def simulate_order_sensitivity(
     favorable_front: int = 3,
     unfavorable_after: int = 100,
     n_runs: int = 1_000,
-    rng: np.random.Generator | int | None = None,
 ) -> dict[str, Any]:
     """Test whether dataset order can flip the decision.
 
@@ -282,11 +273,6 @@ def simulate_order_sensitivity(
     the stopping rule fires after the favorable front, model A wins despite
     being wrong on the majority of the dataset.
     """
-    if isinstance(rng, int):
-        rng = np.random.default_rng(rng)
-    elif rng is None:
-        rng = np.random.default_rng()
-
     bench = BayesianBenchmark()
     factory = bench._posterior_factory
 
@@ -297,19 +283,16 @@ def simulate_order_sensitivity(
         post_a = factory()
         post_b = factory()
 
-        # Phase 1: favorable to A, both equal on these
         for _ in range(favorable_front):
             post_a.observe_one(True)
             post_b.observe_one(False)
 
-        # Check after favorable front
         p = post_a.prob_beats(post_b)
         if p >= bench.confidence:
             early_wins += 1
             total_samples.append(favorable_front)
             continue
 
-        # Phase 2: unfavorable to A
         samples = favorable_front
         for _ in range(unfavorable_after):
             post_a.observe_one(False)
@@ -370,26 +353,17 @@ def calibrate_sweep(
                 rng=rng,
             )
 
-            total_decisions = sum(
-                result[key]
-                for key in ("winner_a", "winner_b", "skipped", "inconclusive")
+            total = sum(
+                result[k] for k in ("winner_a", "winner_b", "skipped", "inconclusive")
             )
             false_rate = (
-                result["false_decisions"] / total_decisions
-                if total_decisions > 0
-                else 0.0
+                result["false_decisions"] / total if total > 0 else 0.0
             )
-            skip_rate = result["skipped"] / total_decisions if total_decisions > 0 else 0.0
+            skip_rate = (
+                result["skipped"] / total if total > 0 else 0.0
+            )
             incon_rate = (
-                result["inconclusive"] / total_decisions
-                if total_decisions > 0
-                else 0.0
-            )
-            win_total = result["winner_a"] + result["winner_b"]
-            correct_win_rate = (
-                (win_total - result["false_decisions"]) / total_decisions
-                if total_decisions > 0
-                else 0.0
+                result["inconclusive"] / total if total > 0 else 0.0
             )
 
             points.append(
@@ -407,8 +381,6 @@ def calibrate_sweep(
                         else 0.0
                     ),
                     possible_max_samples=possible_max,
-                    correct_winner_rate=correct_win_rate,
-                    false_superiority_rate=false_rate,
                 )
             )
 
