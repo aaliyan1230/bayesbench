@@ -131,17 +131,15 @@ class TestOrderSensitivity:
             unfavorable_after=100,
             n_runs=500,
         )
-        assert result["early_wins"] > 0, (
-            "Should see early wins when favorable examples come first"
-        )
+        assert result["early_wins"] > 0, "Should see early wins when favorable examples come first"
 
     def test_larger_front_higher_early_win_rate(self):
         """More favorable examples at the front increase early-win odds."""
         r3 = simulate_order_sensitivity(favorable_front=3, n_runs=300)
         r5 = simulate_order_sensitivity(favorable_front=5, n_runs=300)
-        assert r5["early_win_rate"] >= r3["early_win_rate"], (
-            "More favorable examples should not decrease early-win rate"
-        )
+        assert (
+            r5["early_win_rate"] >= r3["early_win_rate"]
+        ), "More favorable examples should not decrease early-win rate"
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +175,9 @@ class TestCalibrationSweep:
             seed=42,
         )
         p = report.points[0]
-        assert p.false_winner_rate > 0.10, (
-            f"Default false-winner rate {p.false_winner_rate:.1%} should be >10%"
-        )
+        assert (
+            p.false_winner_rate > 0.10
+        ), f"Default false-winner rate {p.false_winner_rate:.1%} should be >10%"
 
     def test_safe_defaults_have_low_false_rate(self):
         """min_samples=20, skip_threshold=0.99 should keep false rate low."""
@@ -191,9 +189,9 @@ class TestCalibrationSweep:
             seed=42,
         )
         p = report.points[0]
-        assert p.false_winner_rate < 0.08, (
-            f"Safe defaults false rate {p.false_winner_rate:.1%} should be <8%"
-        )
+        assert (
+            p.false_winner_rate < 0.08
+        ), f"Safe defaults false rate {p.false_winner_rate:.1%} should be <8%"
 
     def test_table_formatting(self):
         """Table output should contain key columns."""

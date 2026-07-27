@@ -127,16 +127,9 @@ def enumerate_binary_outcomes(
         probabilities.append(seq_prob)
 
     total_prob = sum(probabilities)
-    skipped_prob = sum(
-        p for p, d in zip(probabilities, decisions) if d == "skipped"
-    )
-    winner_prob = sum(
-        p for p, d in zip(probabilities, decisions)
-        if d in ("winner_a", "winner_b")
-    )
-    incon_prob = sum(
-        p for p, d in zip(probabilities, decisions) if d == "inconclusive"
-    )
+    skipped_prob = sum(p for p, d in zip(probabilities, decisions) if d == "skipped")
+    winner_prob = sum(p for p, d in zip(probabilities, decisions) if d in ("winner_a", "winner_b"))
+    incon_prob = sum(p for p, d in zip(probabilities, decisions) if d == "inconclusive")
 
     return {
         "sequences": list(zip(sequences, decisions, probabilities)),
@@ -353,18 +346,10 @@ def calibrate_sweep(
                 rng=rng,
             )
 
-            total = sum(
-                result[k] for k in ("winner_a", "winner_b", "skipped", "inconclusive")
-            )
-            false_rate = (
-                result["false_decisions"] / total if total > 0 else 0.0
-            )
-            skip_rate = (
-                result["skipped"] / total if total > 0 else 0.0
-            )
-            incon_rate = (
-                result["inconclusive"] / total if total > 0 else 0.0
-            )
+            total = sum(result[k] for k in ("winner_a", "winner_b", "skipped", "inconclusive"))
+            false_rate = result["false_decisions"] / total if total > 0 else 0.0
+            skip_rate = result["skipped"] / total if total > 0 else 0.0
+            incon_rate = result["inconclusive"] / total if total > 0 else 0.0
 
             points.append(
                 CalibrationPoint(
@@ -376,16 +361,11 @@ def calibrate_sweep(
                     skipped_rate=skip_rate,
                     inconclusive_rate=incon_rate,
                     expected_samples=(
-                        float(np.mean(result["samples_drawn"]))
-                        if result["samples_drawn"]
-                        else 0.0
+                        float(np.mean(result["samples_drawn"])) if result["samples_drawn"] else 0.0
                     ),
                     possible_max_samples=possible_max,
                 )
             )
 
-    label = (
-        f"true_A={true_acc_a:.2f} true_B={true_acc_b:.2f} "
-        f"conf={confidence:.2f} n={n_runs}"
-    )
+    label = f"true_A={true_acc_a:.2f} true_B={true_acc_b:.2f} " f"conf={confidence:.2f} n={n_runs}"
     return CalibrationReport(params_label=label, points=points)
