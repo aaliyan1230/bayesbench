@@ -1,0 +1,80 @@
+- generic [active] [ref=e1]:
+  - 'heading "Stop When the Evidence Is Enough: Sequential Evaluation for LLMs and Agents" [level=1] [ref=e2]'
+  - paragraph [ref=e3]:
+    - strong [ref=e4]: "Submission: NeurIPS 2026 Education Track — Tutorial"
+    - strong [ref=e5]: "Duration: 2 hours (one session: 45 min instruction + 75 min guided exercises)"
+  - heading "Authors" [level=2] [ref=e6]
+  - paragraph [ref=e7]: Aaliyan Shaikh (independent), Ryan Anthony Marinelli (University of Oslo), Shravani M. (contributor; role to be confirmed)
+  - heading "Abstract" [level=2] [ref=e8]
+  - paragraph [ref=e9]:
+    - text: "Benchmarking large language models is expensive and energy-intensive, yet most of the budget is spent confirming conclusions that are already obvious after a small fraction of the data. This tutorial teaches participants how to evaluate LLMs and agents with Bayesian sequential testing: update a posterior distribution over each model's quality as every example is scored, and stop the evaluation the moment the evidence is strong enough. We use the open-source"
+    - code [ref=e10]: bayesbench
+    - text: package, which the instructors developed and which we release together with this tutorial.
+  - paragraph [ref=e11]:
+    - text: The tutorial's central theme is
+    - emphasis [ref=e12]: calibration
+    - text: ": deciding when a stopping rule is trustworthy. We show that the naive rule \"stop when P(A > B) ≥ 0.95\" is a random walk that eventually crosses its own threshold — under two provably equal models it declares a winner in 65.8% of runs at horizon 200, and even a minimum-sample guard of 100 leaves a 27.5% false-winner rate. We reproduce a published 98.7% cost-saving claim on NorEval exactly, then show that permuting item order produces wrong winners in up to 2.3% of runs — the claim was saved by enormous true gaps, not by the stopping rule. Against this, we teach two principled remedies implemented in"
+    - code [ref=e13]: bayesbench
+    - text: ": equivalence testing via a region of practical equivalence (ROPE), so \"no difference\" is a positive claim and never a consequence of too little data; and Ville-valid confidence sequences (Waudby-Smith & Ramdas, 2023), which guarantee at most α false decisions at"
+    - emphasis [ref=e14]: any
+    - text: stopping time with no calibration and no horizon assumptions. Participants learn to measure the trade-off between the two — guarantees cost samples, heuristics cost trust — with a simulation harness we ship in the package.
+  - paragraph [ref=e15]:
+    - text: "The session is fully executable: every example runs on CPU with no API keys, using deterministic synthetic solvers whose ground truth is known, so participants can directly"
+    - emphasis [ref=e16]: judge
+    - text: the stopping rules against reality. Exercises cover confidence thresholds, ROPE margins, dataset ordering, cost/reliability frontiers, and paired evaluation design. All charts and efficiency claims are reproducible from decision traces exported by the package.
+  - heading "Prerequisites and audience" [level=2] [ref=e17]
+  - list [ref=e18]:
+    - listitem [ref=e19]:
+      - strong [ref=e20]: Audience
+      - text: ": ML practitioners and advanced undergraduates who evaluate or deploy LLM-based systems; no prior Bayesian statistics beyond Bayes' rule and basic conjugate updating (reviewed in the notebook)."
+    - listitem [ref=e21]:
+      - strong [ref=e22]: Software
+      - text: ": Python 3.11+ with"
+      - code [ref=e23]: bayesbench
+      - text: ","
+      - code [ref=e24]: numpy
+      - text: ","
+      - code [ref=e25]: scipy
+      - text: ","
+      - code [ref=e26]: matplotlib
+      - text: ","
+      - code [ref=e27]: pandas
+      - text: ","
+      - code [ref=e28]: jupyter
+      - text: . A single
+      - code [ref=e29]: pip install -r requirements.txt
+      - text: . CPU only; no API keys; no model downloads.
+    - listitem [ref=e30]:
+      - strong [ref=e31]: Hardware
+      - text: ": any laptop that can run Jupyter."
+  - heading "Learning objectives" [level=2] [ref=e32]
+  - list [ref=e33]:
+    - listitem [ref=e34]: Quantify the cost of fixed-budget evaluation and identify when sequential stopping can avoid it.
+    - listitem [ref=e35]: Explain Bayesian posterior updating for binary (Beta–Bernoulli) and continuous (Normal–Inverse-Gamma) scores.
+    - listitem [ref=e36]: Distinguish superiority, equivalence (ROPE), and insufficient evidence; never confuse P(A>B) ≈ 0.5 with equivalence.
+    - listitem [ref=e37]: Calibrate a stopping rule across effect sizes, seeds, and dataset orderings, and explain the optional-stopping trap.
+    - listitem [ref=e38]: Use confidence sequences for any-time error control (≤ α false decisions at any stopping time) and compare their sample cost to heuristic rules.
+    - listitem [ref=e39]: Run streaming, traced, paired, and lower-is-better evaluations and export reproducible evidence for public claims.
+  - heading "Session plan" [level=2] [ref=e40]
+  - paragraph [ref=e41]:
+    - text: "| Time | Activity | Materials | |---|---|---| | 15 min | Motivation: cost of evaluation; the NorEval 98.7% case study | Slides 1–6 | | 25 min | Posterior updating live; decision semantics and ROPE | Notebook §1–§3 | | 20 min | Calibration: optional-stopping trap, confidence sequences | Notebook §4, slides 7–10 | | 15 min | Live streaming, paired and lower-is-better evaluations | Notebook §5 | | 45 min | Guided exercises 1–6 (solutions included for self-check) |"
+    - code [ref=e42]: exercises/
+    - text: "| | 0 min | Buffer / discussion | |"
+  - heading "Relevance to recent literature" [level=2] [ref=e43]
+  - paragraph [ref=e44]:
+    - text: The tutorial is positioned against an active line of work on efficient evaluation. tinyBenchmarks (Maia Polo et al., ICML 2024) shows how much signal is lost when benchmarks are truncated without principled stopping criteria. MixEval (Ni et al., NeurIPS 2024) demonstrates that evaluation sets and their orderings materially change conclusions. "How Benchmark Prediction from Fewer Data Misses the Mark" (NeurIPS 2025) documents that few-shot performance prediction remains unreliable — precisely the regime where sequential, calibration-aware stopping has the most to offer. Our statistical machinery builds on Waudby-Smith & Ramdas (2023),
+    - emphasis [ref=e45]: Estimating means of bounded random variables by betting
+    - text: ", and on the martingale foundations of Ville (1939)."
+  - heading "Software release" [level=2] [ref=e46]
+  - paragraph [ref=e47]:
+    - code [ref=e48]: bayesbench
+    - text: is an open-source Python package (github.com/rymarinelli/ bayesbench) with 300+ tests, a CLI, async support, and framework adapters. The tutorial ZIP includes the executed notebook, exercises and solutions, slides, synthetic datasets, and exported decision traces — everything reruns from a clean environment. An Apache-2.0 relicensing is in progress with contributor consent; the materials are original and self-contained (ZIP < 5 MB).
+  - heading "References" [level=2] [ref=e49]
+  - list [ref=e50]:
+    - listitem [ref=e51]: "Maia Polo, F., et al. (2024). tinyBenchmarks: evaluating LLMs with fewer examples. ICML 2024."
+    - listitem [ref=e52]: "Ni, J., et al. (2024). MixEval: Deriving wisdom of the crowd from LLM benchmark mixtures. NeurIPS 2024."
+    - listitem [ref=e53]: "\"How Benchmark Prediction from Fewer Data Misses the Mark\" (2025). NeurIPS 2025."
+    - listitem [ref=e54]: Waudby-Smith, I., & Ramdas, A. (2023). Estimating means of bounded random variables by betting. JRSS-B.
+    - listitem [ref=e55]: Ville, J. (1939). Étude critique de la notion de collectif.
+  - heading "AI usage disclosure" [level=2] [ref=e56]
+  - paragraph [ref=e57]: Generative AI assistants were used to draft and refactor portions of the package code, tests, and documentation under human supervision; all statistical claims were verified by independent simulation, and the authors take full responsibility for the content.

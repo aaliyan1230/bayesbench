@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -88,8 +89,13 @@ class DecisionRule(ABC):
     """Abstract base for sequential decision rules.
 
     Subclasses hold per-run state. ``observe`` feeds one paired observation
-    and returns the current decision.
+    and returns the current decision. Concrete rules expose ``post_a`` and
+    ``post_b`` (the posterior pair backing the decision, used for reporting);
+    the paired rule exposes the difference posterior as ``post``.
     """
+
+    post_a: Posterior
+    post_b: Posterior
 
     @abstractmethod
     def observe(self, value_a: Any, value_b: Any) -> SequentialDecision:
@@ -127,7 +133,7 @@ class PosteriorThresholdRule(DecisionRule):
         min_samples: int = 30,
         skip_threshold: float | None = None,
         equivalence_margin: float | None = None,
-        posterior_factory: type[Posterior] | None = None,
+        posterior_factory: Callable[[], Posterior] | type[Posterior] | None = None,
         rng: np.random.Generator | int | None = None,
         equivalence_samples: int = 4_000,
     ) -> None:
@@ -142,7 +148,7 @@ class PosteriorThresholdRule(DecisionRule):
         self.skip_threshold = skip_threshold
         self.equivalence_margin = equivalence_margin
         self.equivalence_samples = equivalence_samples
-        self.factory: type[Posterior] = posterior_factory or BetaPosterior
+        self.factory: Callable[[], Posterior] = posterior_factory or BetaPosterior
         if isinstance(rng, int):
             rng = np.random.default_rng(rng)
         self.rng = rng or np.random.default_rng()
@@ -296,6 +302,10 @@ class ConfidenceSequenceRule(DecisionRule):
         self.report_a = BetaPosterior()
         self.report_b = BetaPosterior()
         self.last_decision: SequentialDecision | None = None
+        # Same objects, exposed under the DecisionRule attribute names so the
+        # benchmark engine can build TaskResults without special-casing.
+        self.post_a: Posterior = self.report_a
+        self.post_b: Posterior = self.report_b
 
     def observe(self, value_a: Any, value_b: Any) -> SequentialDecision:
         if not isinstance(value_a, bool) or not isinstance(value_b, bool):
@@ -382,7 +392,7 @@ class PairedDifferenceRule(DecisionRule):
         confidence: float = 0.95,
         min_samples: int = 30,
         equivalence_margin: float | None = None,
-        posterior_factory: type[Posterior] | None = None,
+        posterior_factory: Callable[[], Posterior] | type[Posterior] | None = None,
         rng: np.random.Generator | int | None = None,
         equivalence_samples: int = 4_000,
     ) -> None:
@@ -392,7 +402,7 @@ class PairedDifferenceRule(DecisionRule):
         self.min_samples = min_samples
         self.equivalence_margin = equivalence_margin
         self.equivalence_samples = equivalence_samples
-        self.factory: type[Posterior] = posterior_factory or BetaPosterior
+        self.factory: Callable[[], Posterior] = posterior_factory or BetaPosterior
         if isinstance(rng, int):
             rng = np.random.default_rng(rng)
         self.rng = rng or np.random.default_rng()
@@ -460,7 +470,7 @@ def make_decision_rule(
     min_samples: int = 30,
     skip_threshold: float | None = None,
     equivalence_margin: float | None = None,
-    posterior_factory: type[Posterior] | None = None,
+    posterior_factory: Callable[[], Posterior] | type[Posterior] | None = None,
     alpha: float = 0.05,
     paired: bool = False,
     rng: np.random.Generator | int | None = None,
@@ -472,7 +482,7 @@ def make_decision_rule(
         paired: Wrap the rule in paired-difference semantics.
     """
     if name == "posterior":
-        rule = PosteriorThresholdRule(
+        rule: DecisionRule = PosteriorThresholdRule(
             confidence=confidence,
             min_samples=min_samples,
             skip_threshold=skip_threshold,

@@ -249,6 +249,16 @@ class TestConfidenceSequenceBenchmark:
         with pytest.raises(ValueError):
             BayesianBenchmark(decision_rule="nope")
 
+    def test_cs_rule_exhausted_dataset_reports_inconclusive(self):
+        """Equal models never separate under the CS rule; the exhausted path
+        must build a result without touching missing posteriors."""
+        bench = BayesianBenchmark(decision_rule="confidence_sequence", alpha=0.05)
+        result = bench.compare(perfect_model, perfect_model, score, PROBLEMS[:20])
+        assert result.decision is DecisionStatus.INCONCLUSIVE
+        assert result.problems_tested == 20
+        assert result.posterior_a.n == 20.0
+        assert 0.0 <= result.p_a_beats_b <= 1.0
+
 
 class TestPairedBenchmark:
     def test_paired_binary(self):

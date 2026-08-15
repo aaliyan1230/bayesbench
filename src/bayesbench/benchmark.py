@@ -344,7 +344,7 @@ class BayesianBenchmark:
             min_samples=self.min_samples,
             skip_threshold=self.skip_threshold,
             equivalence_margin=self.equivalence_margin,
-            posterior_factory=factory,  # type: ignore[arg-type]
+            posterior_factory=factory,
             alpha=self.alpha,
             paired=self.paired,
             rng=self.rng,

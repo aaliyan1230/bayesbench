@@ -125,9 +125,16 @@ class BetaPosterior(Posterior):
         value = float(np.clip(value, 0.0, 1.0))
         return float(1.0 - special.betainc(self.alpha, self.beta, value))
 
-    def sample(self, n: int = 1) -> np.ndarray:
-        """Draw ``n`` samples from the posterior."""
-        return np.random.beta(self.alpha, self.beta, size=n)
+    def sample(self, n: int = 1, rng: np.random.Generator | None = None) -> np.ndarray:
+        """Draw ``n`` samples from the posterior.
+
+        Args:
+            n: Number of samples.
+            rng: Optional Generator for reproducible draws.
+        """
+        if rng is None:
+            return np.random.beta(self.alpha, self.beta, size=n)
+        return rng.beta(self.alpha, self.beta, size=n)
 
     def __repr__(self) -> str:
         lo, hi = self.credible_interval()

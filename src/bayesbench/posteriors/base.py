@@ -7,6 +7,7 @@ remains agnostic to the choice of Bayesian model.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
@@ -33,13 +34,16 @@ class Posterior(ABC):
         """
 
     @abstractmethod
-    def prob_beats(self, other: Posterior, n_samples: int = 10_000) -> float:
+    def prob_beats(self, other: Posterior, n_samples: int = 10_000, rng: Any = None) -> float:
         """Compute P(self's metric > other's metric).
 
         Args:
             other: Another posterior of the *same type*.
             n_samples: Number of Monte Carlo samples for numerical estimation
                        (used by implementations that lack closed-form P(A>B)).
+            rng: Optional seed or ``numpy.random.Generator`` for reproducible
+                 Monte Carlo estimation. Implementations with closed forms
+                 may ignore it.
 
         Returns:
             Probability in [0, 1].
@@ -52,6 +56,21 @@ class Posterior(ABC):
         Returns:
             (lower, upper) tuple.
         """
+
+    def sample(self, n: int = 1, rng: np.random.Generator | None = None) -> np.ndarray:
+        """Draw ``n`` samples from the posterior.
+
+        Concrete subclasses should override with an efficient sampler; the
+        default raises :class:`NotImplementedError`.
+
+        Args:
+            n: Number of samples.
+            rng: Optional Generator for reproducible draws.
+
+        Returns:
+            Array of samples.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement sample()")
 
     def prob_beats_value(self, value: float, n_samples: int = 10_000) -> float:
         """Compute P(self's metric > ``value``).
