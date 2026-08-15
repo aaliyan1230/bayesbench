@@ -67,6 +67,23 @@ class SequentialDecision:
         return f"{self.status.value} (p={self.p_a_beats_b:.4f})"
 
 
+@dataclass
+class StepTrace:
+    """One update step of a sequential comparison (for live UI / notebooks).
+
+    Records the per-problem scores, the current evidence, and whether the
+    run ended at this step.
+    """
+
+    step: int
+    score_a: Any
+    score_b: Any
+    p_a_beats_b: float
+    status: DecisionStatus
+    is_terminal: bool = False
+    terminal_reason: str = ""
+
+
 class DecisionRule(ABC):
     """Abstract base for sequential decision rules.
 
@@ -144,7 +161,7 @@ class PosteriorThresholdRule(DecisionRule):
             self.last_decision = decision
             return decision
 
-        p = self.post_a.prob_beats(self.post_b)
+        p = self.post_a.prob_beats(self.post_b, rng=self.rng)
 
         if self.skip_threshold is not None and self.skip_threshold < 1.0:
             if (1.0 - self.skip_threshold) < p < self.skip_threshold:

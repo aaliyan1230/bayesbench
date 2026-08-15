@@ -111,7 +111,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from .benchmark import BayesianBenchmark, BenchmarkReport, TaskResult
+from .benchmark import BayesianBenchmark, BenchmarkReport, LiveUpdate, TaskResult
 from .core import BetaPosterior, is_non_discriminating, prob_a_beats_b
 from .decision import (
     ConfidenceSequenceRule,
@@ -120,6 +120,7 @@ from .decision import (
     PairedDifferenceRule,
     PosteriorThresholdRule,
     SequentialDecision,
+    StepTrace,
 )
 from .decorators import benchmark, suite
 from .posteriors import DirichletPosterior, GammaPosterior, NormalPosterior, Posterior
@@ -132,10 +133,12 @@ __all__ = [
     "BayesianBenchmark",
     "BenchmarkReport",
     "TaskResult",
+    "LiveUpdate",
     # Decision rules
     "DecisionRule",
     "DecisionStatus",
     "SequentialDecision",
+    "StepTrace",
     "PosteriorThresholdRule",
     "ConfidenceSequenceRule",
     "PairedDifferenceRule",

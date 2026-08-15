@@ -159,6 +159,71 @@ class TestDecisionSemantics:
         assert d["paired"] is False
 
 
+class TestTraces:
+    def test_trace_length_matches_problems_tested(self):
+        bench = BayesianBenchmark(confidence=0.95, min_samples=3)
+        result = bench.compare(perfect_model, random_model, score, PROBLEMS)
+        assert len(result.trace) == result.problems_tested
+        assert result.problems_tested < len(PROBLEMS)
+
+    def test_trace_records_scores_and_evidence(self):
+        bench = BayesianBenchmark(confidence=0.95, min_samples=3)
+        result = bench.compare(perfect_model, random_model, score, PROBLEMS)
+        first = result.trace[0]
+        assert first.step == 1
+        assert first.score_a is True and first.score_b is False
+        last = result.trace[-1]
+        assert last.is_terminal is True
+        assert last.status is DecisionStatus.WINNER_A
+
+    def test_trace_terminates_with_decision_status(self):
+        bench = BayesianBenchmark(confidence=0.95, min_samples=3)
+        result = bench.compare(perfect_model, random_model, score, PROBLEMS)
+        terminal = [t for t in result.trace if t.is_terminal]
+        assert len(terminal) == 1
+        assert terminal[0].step == result.problems_tested
+
+    def test_on_step_callback_fires_per_problem(self):
+        seen = []
+        bench = BayesianBenchmark(
+            confidence=0.95, min_samples=3, on_step=lambda t: seen.append(t.step)
+        )
+        result = bench.compare(perfect_model, random_model, score, PROBLEMS)
+        assert seen == list(range(1, result.problems_tested + 1))
+
+    def test_iter_compare_streams_updates(self):
+        bench = BayesianBenchmark(confidence=0.95, min_samples=3)
+        updates = list(bench.iter_compare(perfect_model, random_model, score, PROBLEMS))
+        assert updates[-1].result is not None
+        assert updates[-1].result.decision is DecisionStatus.WINNER_A
+        assert all(u.result is None for u in updates[:-1])
+        assert len(updates) == updates[-1].result.problems_tested
+
+    def test_iter_compare_lazy_invocations(self):
+        calls = {"a": 0, "b": 0}
+
+        def model_a(p):
+            calls["a"] += 1
+            return p["a"]
+
+        def model_b(p):
+            calls["b"] += 1
+            return "WRONG"
+
+        bench = BayesianBenchmark(confidence=0.95, min_samples=3)
+        updates = list(bench.iter_compare(model_a, model_b, score, PROBLEMS))
+        result = updates[-1].result
+        assert result is not None
+        assert calls["a"] == result.problems_tested
+        assert calls["b"] == result.problems_tested
+
+    def test_trace_present_for_exhausted_runs(self):
+        bench = BayesianBenchmark(confidence=0.9999, min_samples=3)
+        result = bench.compare(perfect_model, perfect_model, score, PROBLEMS[:15])
+        assert len(result.trace) == 15
+        assert result.trace[-1].status is DecisionStatus.INCONCLUSIVE
+
+
 class TestConfidenceSequenceBenchmark:
     def test_cs_rule_end_to_end(self):
         bench = BayesianBenchmark(decision_rule="confidence_sequence", alpha=0.05)

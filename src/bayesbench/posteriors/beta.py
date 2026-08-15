@@ -6,6 +6,8 @@ e.g. exact-match, pass/fail unit tests, multiple-choice accuracy.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from numpy.polynomial.legendre import leggauss
 from scipy import special, stats
@@ -77,7 +79,9 @@ class BetaPosterior(Posterior):
         tail = (1 - ci) / 2
         return float(dist.ppf(tail)), float(dist.ppf(1 - tail))
 
-    def prob_beats(self, other: Posterior, n_samples: int = 10_000) -> float:  # noqa: ARG002
+    def prob_beats(
+        self, other: Posterior, n_samples: int = 10_000, rng: Any = None  # noqa: ANN401, ARG002
+    ) -> float:
         """Compute P(self accuracy > other accuracy) via numerical integration.
 
         Uses the closed-form identity:
@@ -87,8 +91,8 @@ class BetaPosterior(Posterior):
         singularity-removing substitution (see module docstring); accurate to
         ~1e-8 and deterministic (no Monte Carlo, no RNG).
 
-        The ``n_samples`` argument is accepted for API compatibility but
-        ignored — the integral is computed deterministically.
+        The ``n_samples`` and ``rng`` arguments are accepted for API
+        compatibility but ignored.
         """
         if not isinstance(other, BetaPosterior):
             raise TypeError("BetaPosterior.prob_beats expects another BetaPosterior")

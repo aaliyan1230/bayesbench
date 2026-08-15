@@ -14,6 +14,7 @@ from .decision import (
     DecisionRule,
     DecisionStatus,
     SequentialDecision,
+    StepTrace,
     make_decision_rule,
 )
 from .posteriors.base import Posterior
@@ -35,6 +36,18 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass
+class LiveUpdate:
+    """One live step of a streaming comparison (iterator interface).
+
+    ``result`` is None while the run continues and holds the final
+    :class:`TaskResult` on the last yielded update.
+    """
+
+    trace: StepTrace
+    result: TaskResult | None = None
+
+
+@dataclass
 class TaskResult:
     """Result of running a single benchmark task."""
 
@@ -48,6 +61,7 @@ class TaskResult:
     decision: DecisionStatus = DecisionStatus.INCONCLUSIVE
     paired: bool = False
     terminal_reason: str = ""
+    trace: list[StepTrace] = field(default_factory=list)
 
     @property
     def winner(self) -> str | None:
@@ -253,6 +267,10 @@ class BayesianBenchmark:
                 and the rule models per-item score *differences* instead of
                 two independent streams.
         alpha: Any-time error level for the confidence-sequence rule.
+        on_step: Optional callback invoked after every observed problem with
+                 a :class:`~bayesbench.decision.StepTrace` (for live UI,
+                 notebooks, logging).
+        rng: Seed or Generator used by Monte Carlo decision components.
 
     Examples::
 
@@ -287,6 +305,7 @@ class BayesianBenchmark:
         paired: bool = False,
         alpha: float = 0.05,
         rng: np.random.Generator | int | None = None,
+        on_step: Callable[[StepTrace], None] | None = None,
     ) -> None:
         if not (0.5 < confidence <= 1.0):
             raise ValueError("confidence must be in (0.5, 1.0]")
@@ -295,7 +314,9 @@ class BayesianBenchmark:
         if max_samples is not None and max_samples < 1:
             raise ValueError("max_samples must be >= 1")
         if decision_rule not in ("posterior", "confidence_sequence"):
-            raise ValueError("decision_rule must be 'posterior' or 'confidence_sequence'")
+            raise ValueError(
+                "decision_rule must be 'posterior' or 'confidence_sequence'"
+            )
         self.confidence = confidence
         self.skip_threshold = skip_threshold
         self.min_samples = min_samples
@@ -305,6 +326,7 @@ class BayesianBenchmark:
         self.alpha = alpha
         self.decision_rule = decision_rule
         self.rng = rng
+        self.on_step = on_step
         self._posterior_factory: Callable[[], Posterior] = (
             posterior_factory if posterior_factory is not None else BetaPosterior
         )
@@ -330,6 +352,11 @@ class BayesianBenchmark:
             rng=self.rng,
         )
 
+    def _emit(self, trace: StepTrace, traces: list[StepTrace]) -> None:
+        traces.append(trace)
+        if self.on_step is not None:
+            self.on_step(trace)
+
     def _make_result(
         self,
         name: str,
@@ -338,6 +365,7 @@ class BayesianBenchmark:
         rule: DecisionRule,
         decision: SequentialDecision,
         paired: bool = False,
+        trace: list[StepTrace] | None = None,
     ) -> TaskResult:
         post_a = getattr(rule, "post_a", None)
         post_b = getattr(rule, "post_b", None)
@@ -354,6 +382,7 @@ class BayesianBenchmark:
             decision=decision.status,
             paired=paired,
             terminal_reason=decision.details,
+            trace=trace or [],
         )
 
     # ------------------------------------------------------------------
@@ -454,6 +483,7 @@ class BayesianBenchmark:
         factory = posterior_factory or self._posterior_factory
         problems = list(dataset)
         rule = self._new_rule(factory)
+        traces: list[StepTrace] = []
 
         iterator: Iterable[Any] = enumerate(problems)
         if verbose and _HAS_TQDM:
@@ -461,13 +491,27 @@ class BayesianBenchmark:
 
         _log.debug("compare: task=%s  n=%d", name, len(problems))
         for i, problem in iterator:
-            decision = rule.observe(
-                score_fn(problem, model_a(problem)),
-                score_fn(problem, model_b(problem)),
-            )
+            val_a = score_fn(problem, model_a(problem))
+            val_b = score_fn(problem, model_b(problem))
+            decision = rule.observe(val_a, val_b)
             tested = i + 1
+            terminal = decision.terminal or (
+                self.max_samples is not None and tested >= self.max_samples
+            )
+            self._emit(
+                StepTrace(
+                    step=tested,
+                    score_a=val_a,
+                    score_b=val_b,
+                    p_a_beats_b=decision.p_a_beats_b,
+                    status=decision.status,
+                    is_terminal=terminal,
+                    terminal_reason=decision.details,
+                ),
+                traces,
+            )
 
-            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+            if terminal:
                 _log.info(
                     "compare: task=%s %s at %d/%d  P(A>B)=%.3f",
                     name,
@@ -477,7 +521,13 @@ class BayesianBenchmark:
                     decision.p_a_beats_b,
                 )
                 return self._make_result(
-                    name, tested, len(problems), rule, decision, paired=self.paired
+                    name,
+                    tested,
+                    len(problems),
+                    rule,
+                    decision,
+                    paired=self.paired,
+                    trace=traces,
                 )
 
         p = rule.post_a.prob_beats(rule.post_b)
@@ -494,7 +544,95 @@ class BayesianBenchmark:
             rule,
             SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
             paired=self.paired,
+            trace=traces,
         )
+
+    def iter_compare(
+        self,
+        model_a: Callable[[Any], Any],
+        model_b: Callable[[Any], Any],
+        score_fn: Callable[[Any, Any], Any],
+        dataset: Iterable[Any],
+        name: str = "task",
+        posterior_factory: Callable[[], Posterior] | None = None,
+    ) -> Iterable[LiveUpdate]:
+        """Stream a comparison step by step (generator).
+
+        Yields one :class:`LiveUpdate` per evaluated problem. The last
+        yielded update carries the final :class:`TaskResult` in its
+        ``result`` field. Model invocations happen lazily, so reported
+        sample counts match actual calls.
+
+        Example::
+
+            last = None
+            for update in bench.iter_compare(gpt4, gpt35, score, problems):
+                last = update
+                print(f"step {update.trace.step}: "
+                      f"P(A>B)={update.trace.p_a_beats_b:.3f}")
+            print(last.result.winner)
+        """
+        factory = posterior_factory or self._posterior_factory
+        problems = list(dataset)
+        rule = self._new_rule(factory)
+        traces: list[StepTrace] = []
+
+        for i, problem in enumerate(problems):
+            val_a = score_fn(problem, model_a(problem))
+            val_b = score_fn(problem, model_b(problem))
+            decision = rule.observe(val_a, val_b)
+            tested = i + 1
+            terminal = decision.terminal or (
+                self.max_samples is not None and tested >= self.max_samples
+            )
+            trace = StepTrace(
+                step=tested,
+                score_a=val_a,
+                score_b=val_b,
+                p_a_beats_b=decision.p_a_beats_b,
+                status=decision.status,
+                is_terminal=terminal,
+                terminal_reason=decision.details,
+            )
+            self._emit(trace, traces)
+
+            if terminal:
+                result = self._make_result(
+                    name,
+                    tested,
+                    len(problems),
+                    rule,
+                    decision,
+                    paired=self.paired,
+                    trace=traces,
+                )
+                yield LiveUpdate(trace=trace, result=result)
+                return
+
+            yield LiveUpdate(trace=trace)
+
+        p = rule.post_a.prob_beats(rule.post_b)
+        decision = SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted")
+        trace = StepTrace(
+            step=len(problems),
+            score_a=None,
+            score_b=None,
+            p_a_beats_b=p,
+            status=decision.status,
+            is_terminal=True,
+            terminal_reason=decision.details,
+        )
+        self._emit(trace, traces)
+        result = self._make_result(
+            name,
+            len(problems),
+            len(problems),
+            rule,
+            decision,
+            paired=self.paired,
+            trace=traces,
+        )
+        yield LiveUpdate(trace=trace, result=result)
 
     async def compare_async(
         self,
@@ -519,6 +657,7 @@ class BayesianBenchmark:
         factory = posterior_factory or self._posterior_factory
         problems = list(dataset)
         rule = self._new_rule(factory)
+        traces: list[StepTrace] = []
 
         _log.debug("compare_async: task=%s  n=%d", name, len(problems))
         for i, problem in enumerate(problems):
@@ -526,12 +665,35 @@ class BayesianBenchmark:
                 call(model_a, problem),
                 call(model_b, problem),
             )
-            decision = rule.observe(score_fn(problem, output_a), score_fn(problem, output_b))
+            val_a = score_fn(problem, output_a)
+            val_b = score_fn(problem, output_b)
+            decision = rule.observe(val_a, val_b)
             tested = i + 1
+            terminal = decision.terminal or (
+                self.max_samples is not None and tested >= self.max_samples
+            )
+            self._emit(
+                StepTrace(
+                    step=tested,
+                    score_a=val_a,
+                    score_b=val_b,
+                    p_a_beats_b=decision.p_a_beats_b,
+                    status=decision.status,
+                    is_terminal=terminal,
+                    terminal_reason=decision.details,
+                ),
+                traces,
+            )
 
-            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+            if terminal:
                 return self._make_result(
-                    name, tested, len(problems), rule, decision, paired=self.paired
+                    name,
+                    tested,
+                    len(problems),
+                    rule,
+                    decision,
+                    paired=self.paired,
+                    trace=traces,
                 )
 
         p = rule.post_a.prob_beats(rule.post_b)
@@ -542,6 +704,7 @@ class BayesianBenchmark:
             rule,
             SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
             paired=self.paired,
+            trace=traces,
         )
 
     # ------------------------------------------------------------------
@@ -607,6 +770,7 @@ class BayesianBenchmark:
         factory = task_def.get("posterior_factory") or self._posterior_factory
         problems = list(dataset)
         rule = self._new_rule(factory)
+        traces: list[StepTrace] = []
 
         problem_iter: Iterable[Any] = enumerate(problems)
         if verbose and _HAS_TQDM:
@@ -616,10 +780,31 @@ class BayesianBenchmark:
             val_a, val_b = fn(problem)
             decision = rule.observe(val_a, val_b)
             tested = i + 1
+            terminal = decision.terminal or (
+                self.max_samples is not None and tested >= self.max_samples
+            )
+            self._emit(
+                StepTrace(
+                    step=tested,
+                    score_a=val_a,
+                    score_b=val_b,
+                    p_a_beats_b=decision.p_a_beats_b,
+                    status=decision.status,
+                    is_terminal=terminal,
+                    terminal_reason=decision.details,
+                ),
+                traces,
+            )
 
-            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+            if terminal:
                 return self._make_result(
-                    name, tested, len(problems), rule, decision, paired=self.paired
+                    name,
+                    tested,
+                    len(problems),
+                    rule,
+                    decision,
+                    paired=self.paired,
+                    trace=traces,
                 )
 
         p = rule.post_a.prob_beats(rule.post_b)
@@ -630,6 +815,7 @@ class BayesianBenchmark:
             rule,
             SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
             paired=self.paired,
+            trace=traces,
         )
 
     async def _run_task_async(self, task_def: dict[str, Any]) -> TaskResult:
@@ -641,6 +827,7 @@ class BayesianBenchmark:
         factory = task_def.get("posterior_factory") or self._posterior_factory
         problems = list(dataset)
         rule = self._new_rule(factory)
+        traces: list[StepTrace] = []
 
         for i, problem in enumerate(problems):
             if asyncio.iscoroutinefunction(fn):
@@ -650,10 +837,31 @@ class BayesianBenchmark:
             val_a, val_b = result
             decision = rule.observe(val_a, val_b)
             tested = i + 1
+            terminal = decision.terminal or (
+                self.max_samples is not None and tested >= self.max_samples
+            )
+            self._emit(
+                StepTrace(
+                    step=tested,
+                    score_a=val_a,
+                    score_b=val_b,
+                    p_a_beats_b=decision.p_a_beats_b,
+                    status=decision.status,
+                    is_terminal=terminal,
+                    terminal_reason=decision.details,
+                ),
+                traces,
+            )
 
-            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+            if terminal:
                 return self._make_result(
-                    name, tested, len(problems), rule, decision, paired=self.paired
+                    name,
+                    tested,
+                    len(problems),
+                    rule,
+                    decision,
+                    paired=self.paired,
+                    trace=traces,
                 )
 
         p = rule.post_a.prob_beats(rule.post_b)
@@ -664,4 +872,5 @@ class BayesianBenchmark:
             rule,
             SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
             paired=self.paired,
+            trace=traces,
         )
