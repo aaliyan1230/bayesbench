@@ -80,7 +80,10 @@ class BetaPosterior(Posterior):
         return float(dist.ppf(tail)), float(dist.ppf(1 - tail))
 
     def prob_beats(
-        self, other: Posterior, n_samples: int = 10_000, rng: Any = None  # noqa: ANN401, ARG002
+        self,
+        other: Posterior,
+        n_samples: int = 10_000,
+        rng: Any = None,  # noqa: ANN401, ARG002
     ) -> float:
         """Compute P(self accuracy > other accuracy) via numerical integration.
 

@@ -246,6 +246,18 @@ class TestPairedDifferenceRule:
                 break
         assert decision.status is DecisionStatus.EQUIVALENT
 
+    def test_binary_equal_solvers_equivalent_via_rope(self):
+        """Binary paired ROPE is measured around the 0.5 discordant center."""
+        rule = PairedDifferenceRule(confidence=0.95, min_samples=50, equivalence_margin=0.1)
+        rng = np.random.default_rng(0)
+        for _ in range(300):
+            a = bool(rng.random() < 0.55)
+            b = bool(rng.random() < 0.55)
+            decision = rule.observe(a, b)
+            if decision.terminal:
+                break
+        assert decision.status is DecisionStatus.EQUIVALENT
+
 
 # ---------------------------------------------------------------------------
 # prob_beats_value closed forms

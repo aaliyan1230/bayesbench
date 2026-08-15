@@ -450,7 +450,8 @@ class PairedDifferenceRule(DecisionRule):
 
     def _rope_mass(self, margin: float) -> float:
         samples = np.asarray(self.post.sample(self.equivalence_samples))
-        return float(np.mean(np.abs(samples) <= margin))
+        center = 0.5 if self._binary else 0.0
+        return float(np.mean(np.abs(samples - center) <= margin))
 
 
 def make_decision_rule(

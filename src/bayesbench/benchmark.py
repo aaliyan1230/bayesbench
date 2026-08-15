@@ -314,9 +314,7 @@ class BayesianBenchmark:
         if max_samples is not None and max_samples < 1:
             raise ValueError("max_samples must be >= 1")
         if decision_rule not in ("posterior", "confidence_sequence"):
-            raise ValueError(
-                "decision_rule must be 'posterior' or 'confidence_sequence'"
-            )
+            raise ValueError("decision_rule must be 'posterior' or 'confidence_sequence'")
         self.confidence = confidence
         self.skip_threshold = skip_threshold
         self.min_samples = min_samples
