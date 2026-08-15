@@ -126,7 +126,7 @@ from .decorators import benchmark, suite
 from .posteriors import DirichletPosterior, GammaPosterior, NormalPosterior, Posterior
 from .ranking import BayesianRanker, RankingResult
 
-__version__ = "0.4.0.dev0"
+__version__ = "0.5.0b1"
 
 __all__ = [
     # High-level API
