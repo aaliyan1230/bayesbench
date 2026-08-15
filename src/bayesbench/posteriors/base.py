@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+import numpy as np
+
 
 class Posterior(ABC):
     """Abstract base class for conjugate posterior distributions.
@@ -50,6 +52,22 @@ class Posterior(ABC):
         Returns:
             (lower, upper) tuple.
         """
+
+    def prob_beats_value(self, value: float, n_samples: int = 10_000) -> float:
+        """Compute P(self's metric > ``value``).
+
+        Default implementation draws Monte Carlo samples; subclasses with
+        closed forms should override.
+
+        Args:
+            value: A fixed scalar to compare against.
+            n_samples: Monte Carlo samples for the default implementation.
+
+        Returns:
+            Probability in [0, 1].
+        """
+        samples = np.asarray(self.sample(n_samples))
+        return float(np.mean(samples > value))
 
     @property
     @abstractmethod

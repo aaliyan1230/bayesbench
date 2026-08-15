@@ -134,6 +134,15 @@ class NormalPosterior(Posterior):
         samples_other = other.sample(n_samples)
         return float(np.mean(samples_self > samples_other))
 
+    def prob_beats_value(self, value: float, n_samples: int = 10_000) -> float:  # noqa: ARG002
+        """Compute P(self mean score > ``value``) exactly via the Student-t CDF.
+
+        ``n_samples`` is accepted for API compatibility and ignored.
+        """
+        df = 2.0 * self.alpha_n
+        scale = float(np.sqrt(self.beta_n / (self.alpha_n * self.kappa_n)))
+        return float(1.0 - stats.t.cdf(value, df=df, loc=self.mu_n, scale=scale))
+
     def __repr__(self) -> str:
         lo, hi = self.credible_interval()
         return f"NormalPosterior(mu={self.mu_n:.3f}, n={self._n}, " f"95%CI=[{lo:.3f}, {hi:.3f}])"

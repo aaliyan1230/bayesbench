@@ -110,6 +110,14 @@ class BetaPosterior(Posterior):
 
         return float(np.clip(s_left + s_right, 0.0, 1.0))
 
+    def prob_beats_value(self, value: float, n_samples: int = 10_000) -> float:  # noqa: ARG002
+        """Compute P(self accuracy > ``value``) exactly via the Beta CDF.
+
+        ``n_samples`` is accepted for API compatibility and ignored.
+        """
+        value = float(np.clip(value, 0.0, 1.0))
+        return float(1.0 - special.betainc(self.alpha, self.beta, value))
+
     def sample(self, n: int = 1) -> np.ndarray:
         """Draw ``n`` samples from the posterior."""
         return np.random.beta(self.alpha, self.beta, size=n)

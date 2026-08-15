@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from .benchmark import BayesianBenchmark
+from .decision import DecisionStatus, PosteriorThresholdRule
 from .posteriors.base import Posterior
 from .posteriors.beta import BetaPosterior
 
@@ -140,27 +140,24 @@ def enumerate_binary_outcomes(
     decisions: list[str] = []
     probabilities: list[float] = []
 
-    bench = BayesianBenchmark(
-        confidence=confidence, skip_threshold=skip_threshold, min_samples=min_samples
-    )
-    factory = bench._posterior_factory
-
     for seq_pairs in sequences:
-        post_a = factory()
-        post_b = factory()
-        for j, (val_a, val_b) in enumerate(seq_pairs):
-            post_a.observe_one(val_a)
-            post_b.observe_one(val_b)
-            tested = j + 1
-            if tested < min_samples:
+        rule = PosteriorThresholdRule(
+            confidence=confidence,
+            skip_threshold=skip_threshold,
+            min_samples=min_samples,
+            posterior_factory=BetaPosterior,
+        )
+        for val_a, val_b in seq_pairs:
+            dec = rule.observe(val_a, val_b)
+            if dec.status is DecisionStatus.INCONCLUSIVE:
                 continue
-            if bench._is_non_discriminating(post_a, post_b):
+            if dec.status is DecisionStatus.EQUIVALENT:
                 decisions.append("skipped")
-                break
-            stop, p = bench._stopping(post_a, post_b)
-            if stop:
-                decisions.append("winner_a" if p >= confidence else "winner_b")
-                break
+            elif dec.status is DecisionStatus.WINNER_A:
+                decisions.append("winner_a")
+            else:
+                decisions.append("winner_b")
+            break
         else:
             decisions.append("inconclusive")
 
@@ -237,10 +234,6 @@ def simulate_pairwise(
     elif rng is None:
         rng = np.random.default_rng()
 
-    bench = BayesianBenchmark(
-        confidence=confidence, skip_threshold=skip_threshold, min_samples=min_samples
-    )
-
     winner_a = 0
     winner_b = 0
     skipped = 0
@@ -251,8 +244,12 @@ def simulate_pairwise(
     factory: Callable[[], Posterior] = posterior_factory or BetaPosterior
 
     for _ in range(n):
-        post_a = factory()
-        post_b = factory()
+        rule = PosteriorThresholdRule(
+            confidence=confidence,
+            skip_threshold=skip_threshold,
+            min_samples=min_samples,
+            posterior_factory=factory,
+        )
 
         for j in range(max_samples):
             if item_sd > 0.0:
@@ -263,28 +260,23 @@ def simulate_pairwise(
                 p_a, p_b = true_acc_a, true_acc_b
             val_a = rng.random() < p_a
             val_b = rng.random() < p_b
-            post_a.observe_one(val_a)
-            post_b.observe_one(val_b)
+            dec = rule.observe(val_a, val_b)
             tested = j + 1
 
-            if tested < min_samples:
-                continue
-
-            if bench._is_non_discriminating(post_a, post_b):
+            if dec.status is DecisionStatus.EQUIVALENT:
                 skipped += 1
                 samples_drawn.append(tested)
                 break
-
-            stop, p = bench._stopping(post_a, post_b)
-            if stop:
-                if p >= confidence:
-                    winner_a += 1
-                    if true_acc_a <= true_acc_b:
-                        false_decisions += 1
-                else:
-                    winner_b += 1
-                    if true_acc_b <= true_acc_a:
-                        false_decisions += 1
+            if dec.status is DecisionStatus.WINNER_A:
+                winner_a += 1
+                if true_acc_a <= true_acc_b:
+                    false_decisions += 1
+                samples_drawn.append(tested)
+                break
+            if dec.status is DecisionStatus.WINNER_B:
+                winner_b += 1
+                if true_acc_b <= true_acc_a:
+                    false_decisions += 1
                 samples_drawn.append(tested)
                 break
         else:
@@ -327,38 +319,33 @@ def simulate_order_sensitivity(
     the stopping rule fires after the favorable front, model A wins despite
     being wrong on the majority of the dataset.
     """
-    bench = BayesianBenchmark()
-    factory = bench._posterior_factory
+    factory: Callable[[], Posterior] = BetaPosterior
 
     early_wins = 0
     total_samples: list[int] = []
 
     for _ in range(n_runs):
-        post_a = factory()
-        post_b = factory()
+        rule = PosteriorThresholdRule(
+            confidence=0.95,
+            skip_threshold=0.85,
+            min_samples=3,
+            posterior_factory=factory,
+        )
 
         for _ in range(favorable_front):
-            post_a.observe_one(True)
-            post_b.observe_one(False)
+            rule.observe(True, False)
 
-        p = post_a.prob_beats(post_b)
-        if p >= bench.confidence:
+        last = rule.last_decision
+        if last is not None and last.status is DecisionStatus.WINNER_A:
             early_wins += 1
             total_samples.append(favorable_front)
             continue
 
         samples = favorable_front
         for _ in range(unfavorable_after):
-            post_a.observe_one(False)
-            post_b.observe_one(True)
+            last = rule.observe(False, True)
             samples += 1
-            if samples < bench.min_samples:
-                continue
-            p = post_a.prob_beats(post_b)
-            if bench._is_non_discriminating(post_a, post_b):
-                break
-            stop, _ = bench._stopping(post_a, post_b)
-            if stop:
+            if last.terminal:
                 break
         total_samples.append(samples)
 

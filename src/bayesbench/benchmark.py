@@ -8,6 +8,14 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
+from .decision import (
+    DecisionRule,
+    DecisionStatus,
+    SequentialDecision,
+    make_decision_rule,
+)
 from .posteriors.base import Posterior
 from .posteriors.beta import BetaPosterior
 
@@ -36,22 +44,40 @@ class TaskResult:
     posterior_a: Posterior
     posterior_b: Posterior
     p_a_beats_b: float
-    skipped: bool = False
     confidence: float = 0.95
+    decision: DecisionStatus = DecisionStatus.INCONCLUSIVE
+    paired: bool = False
+    terminal_reason: str = ""
 
     @property
     def winner(self) -> str | None:
-        """'model_a', 'model_b', or None (inconclusive).
+        """'model_a', 'model_b', or None.
 
-        Uses the confidence threshold configured for the benchmark that
-        produced this result. A result is declared only when p is at least
-        ``confidence`` or at most ``1 - confidence``.
+        Derived from the decision status: WINNER_A -> 'model_a',
+        WINNER_B -> 'model_b', anything else (equivalent / inconclusive)
+        -> None. For legacy results the confidence threshold is still
+        honoured: a result is decisive only when p >= confidence or
+        p <= 1 - confidence.
         """
+        if self.decision is DecisionStatus.WINNER_A:
+            return "model_a"
+        if self.decision is DecisionStatus.WINNER_B:
+            return "model_b"
         if self.p_a_beats_b >= self.confidence:
             return "model_a"
         if self.p_a_beats_b <= (1.0 - self.confidence):
             return "model_b"
         return None
+
+    @property
+    def skipped(self) -> bool:
+        """Deprecated alias: True when the decision is EQUIVALENT.
+
+        The old "skipped" flag labelled any run that stopped with
+        P(A>B) inside the skip window as non-discriminating. It is now
+        reported as ``decision == DecisionStatus.EQUIVALENT``.
+        """
+        return self.decision is DecisionStatus.EQUIVALENT
 
     @property
     def efficiency(self) -> float:
@@ -81,6 +107,9 @@ class TaskResult:
             "p_a_beats_b": self.p_a_beats_b,
             "confidence": self.confidence,
             "winner": self.winner,
+            "decision": self.decision.value,
+            "paired": self.paired,
+            "terminal_reason": self.terminal_reason,
             "skipped": self.skipped,
             "mean_a": self.posterior_a.mean,
             "mean_b": self.posterior_b.mean,
@@ -91,7 +120,7 @@ class TaskResult:
         }
 
     def __str__(self) -> str:
-        status = "SKIPPED" if self.skipped else (self.winner or "INCONCLUSIVE")
+        status = self.decision.value.upper()
         return (
             f"{self.name}: {status} | "
             f"tested {self.problems_tested}/{self.total_problems} "
@@ -197,16 +226,33 @@ class BayesianBenchmark:
     subclass for custom Bayesian models.
 
     Args:
-        confidence: Stopping threshold. Declare a winner when
-                    P(A>B) ≥ confidence or ≤ (1-confidence).
-        skip_threshold: Skip a task as non-discriminating when
-                        P(A>B) ∈ (1-skip_threshold, skip_threshold).
-        min_samples: Minimum evaluations before any early stopping.
+        confidence: Decision threshold for the posterior rule. Declare a
+                    winner when P(A>B) ≥ confidence or ≤ (1-confidence).
+        skip_threshold: Legacy P(A>B)-window "skip" heuristic. Disabled by
+                        default (None). Deprecated: it converts insufficient
+                        early evidence into premature terminal decisions.
+        min_samples: Minimum evaluations before any early stopping decision.
+                     Default 30 (calibrated: keeps null false-winner rates
+                     meaningfully lower than the old default of 3).
         posterior_factory: Zero-argument callable that returns a fresh
                            :class:`~bayesbench.posteriors.Posterior`.
                            Defaults to :class:`~bayesbench.posteriors.BetaPosterior`
                            (binary outcomes). Pass ``NormalPosterior`` for
                            continuous score tasks.
+        decision_rule: "posterior" (default) or "confidence_sequence".
+                       The confidence-sequence rule guarantees
+                       P(wrong winner at any stopping time) <= alpha with no
+                       calibration, at the cost of more samples (binary
+                       outcomes only).
+        equivalence_margin: Optional ROPE half-width. When set, the run
+                            reports EQUIVALENT once posterior mass inside
+                            |theta_a - theta_b| <= margin reaches confidence.
+        max_samples: Optional hard cap on problems evaluated per task. When
+                     reached without a decision the run is INCONCLUSIVE.
+        paired: Treat problems as paired: both models answer the same items,
+                and the rule models per-item score *differences* instead of
+                two independent streams.
+        alpha: Any-time error level for the confidence-sequence rule.
 
     Examples::
 
@@ -221,22 +267,44 @@ class BayesianBenchmark:
         bench = BayesianBenchmark(
             posterior_factory=lambda: NormalPosterior(mu_0=0.30)
         )
+
+        # Calibrated any-time decisions (binary only)
+        bench = BayesianBenchmark(decision_rule="confidence_sequence", alpha=0.05)
+
+        # Paired evaluation: shared items modelled as score differences
+        bench = BayesianBenchmark(paired=True, posterior_factory=NormalPosterior)
     """
 
     def __init__(
         self,
         confidence: float = 0.95,
-        skip_threshold: float = 0.85,
-        min_samples: int = 3,
+        skip_threshold: float | None = None,
+        min_samples: int = 30,
         posterior_factory: Callable[[], Posterior] | type[Posterior] | None = None,
+        decision_rule: str = "posterior",
+        equivalence_margin: float | None = None,
+        max_samples: int | None = None,
+        paired: bool = False,
+        alpha: float = 0.05,
+        rng: np.random.Generator | int | None = None,
     ) -> None:
         if not (0.5 < confidence <= 1.0):
             raise ValueError("confidence must be in (0.5, 1.0]")
-        if not (0.5 < skip_threshold <= 1.0):
+        if skip_threshold is not None and not (0.5 < skip_threshold <= 1.0):
             raise ValueError("skip_threshold must be in (0.5, 1.0]")
+        if max_samples is not None and max_samples < 1:
+            raise ValueError("max_samples must be >= 1")
+        if decision_rule not in ("posterior", "confidence_sequence"):
+            raise ValueError("decision_rule must be 'posterior' or 'confidence_sequence'")
         self.confidence = confidence
         self.skip_threshold = skip_threshold
         self.min_samples = min_samples
+        self.equivalence_margin = equivalence_margin
+        self.max_samples = max_samples
+        self.paired = paired
+        self.alpha = alpha
+        self.decision_rule = decision_rule
+        self.rng = rng
         self._posterior_factory: Callable[[], Posterior] = (
             posterior_factory if posterior_factory is not None else BetaPosterior
         )
@@ -249,16 +317,44 @@ class BayesianBenchmark:
     def _new_posterior(self) -> Posterior:
         return self._posterior_factory()
 
-    def _is_non_discriminating(self, pa: Posterior, pb: Posterior) -> bool:
-        if self.skip_threshold >= 1.0:
-            return False
-        p = pa.prob_beats(pb)
-        return (1.0 - self.skip_threshold) < p < self.skip_threshold
+    def _new_rule(self, factory: Callable[[], Posterior]) -> DecisionRule:
+        return make_decision_rule(
+            name=self.decision_rule,
+            confidence=self.confidence,
+            min_samples=self.min_samples,
+            skip_threshold=self.skip_threshold,
+            equivalence_margin=self.equivalence_margin,
+            posterior_factory=factory,  # type: ignore[arg-type]
+            alpha=self.alpha,
+            paired=self.paired,
+            rng=self.rng,
+        )
 
-    def _stopping(self, pa: Posterior, pb: Posterior) -> tuple[bool, float]:
-        """Return (should_stop, p_a_beats_b)."""
-        p = pa.prob_beats(pb)
-        return (p >= self.confidence or p <= (1.0 - self.confidence)), p
+    def _make_result(
+        self,
+        name: str,
+        tested: int,
+        total: int,
+        rule: DecisionRule,
+        decision: SequentialDecision,
+        paired: bool = False,
+    ) -> TaskResult:
+        post_a = getattr(rule, "post_a", None)
+        post_b = getattr(rule, "post_b", None)
+        if post_a is None or post_b is None:
+            post_a, post_b = self._new_posterior(), self._new_posterior()
+        return TaskResult(
+            name=name,
+            problems_tested=tested,
+            total_problems=total,
+            posterior_a=post_a,
+            posterior_b=post_b,
+            p_a_beats_b=decision.p_a_beats_b,
+            confidence=self.confidence,
+            decision=decision.status,
+            paired=paired,
+            terminal_reason=decision.details,
+        )
 
     # ------------------------------------------------------------------
     # Decorator API
@@ -357,8 +453,7 @@ class BayesianBenchmark:
         """
         factory = posterior_factory or self._posterior_factory
         problems = list(dataset)
-        post_a = factory()
-        post_b = factory()
+        rule = self._new_rule(factory)
 
         iterator: Iterable[Any] = enumerate(problems)
         if verbose and _HAS_TQDM:
@@ -366,68 +461,39 @@ class BayesianBenchmark:
 
         _log.debug("compare: task=%s  n=%d", name, len(problems))
         for i, problem in iterator:
-            post_a.observe_one(score_fn(problem, model_a(problem)))
-            post_b.observe_one(score_fn(problem, model_b(problem)))
+            decision = rule.observe(
+                score_fn(problem, model_a(problem)),
+                score_fn(problem, model_b(problem)),
+            )
             tested = i + 1
 
-            if tested < self.min_samples:
-                continue
-
-            if self._is_non_discriminating(post_a, post_b):
-                p = post_a.prob_beats(post_b)
+            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
                 _log.info(
-                    "compare: task=%s SKIPPED at %d/%d  P(A>B)=%.3f",
+                    "compare: task=%s %s at %d/%d  P(A>B)=%.3f",
                     name,
+                    decision.status.value,
                     tested,
                     len(problems),
-                    p,
+                    decision.p_a_beats_b,
                 )
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    skipped=True,
-                    confidence=self.confidence,
+                return self._make_result(
+                    name, tested, len(problems), rule, decision, paired=self.paired
                 )
 
-            stop, p = self._stopping(post_a, post_b)
-            if stop:
-                _log.info(
-                    "compare: task=%s STOPPED at %d/%d  P(A>B)=%.3f  winner=%s",
-                    name,
-                    tested,
-                    len(problems),
-                    p,
-                    "model_a" if p >= self.confidence else "model_b",
-                )
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    confidence=self.confidence,
-                )
-
-        p = post_a.prob_beats(post_b)
+        p = rule.post_a.prob_beats(rule.post_b)
         _log.info(
             "compare: task=%s EXHAUSTED %d problems  P(A>B)=%.3f",
             name,
             len(problems),
             p,
         )
-        return TaskResult(
+        return self._make_result(
             name,
             len(problems),
             len(problems),
-            post_a,
-            post_b,
-            p,
-            confidence=self.confidence,
+            rule,
+            SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
+            paired=self.paired,
         )
 
     async def compare_async(
@@ -452,8 +518,7 @@ class BayesianBenchmark:
 
         factory = posterior_factory or self._posterior_factory
         problems = list(dataset)
-        post_a = factory()
-        post_b = factory()
+        rule = self._new_rule(factory)
 
         _log.debug("compare_async: task=%s  n=%d", name, len(problems))
         for i, problem in enumerate(problems):
@@ -461,47 +526,22 @@ class BayesianBenchmark:
                 call(model_a, problem),
                 call(model_b, problem),
             )
-            post_a.observe_one(score_fn(problem, output_a))
-            post_b.observe_one(score_fn(problem, output_b))
+            decision = rule.observe(score_fn(problem, output_a), score_fn(problem, output_b))
             tested = i + 1
 
-            if tested < self.min_samples:
-                continue
-
-            if self._is_non_discriminating(post_a, post_b):
-                p = post_a.prob_beats(post_b)
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    skipped=True,
-                    confidence=self.confidence,
+            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+                return self._make_result(
+                    name, tested, len(problems), rule, decision, paired=self.paired
                 )
 
-            stop, p = self._stopping(post_a, post_b)
-            if stop:
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    confidence=self.confidence,
-                )
-
-        p = post_a.prob_beats(post_b)
-        return TaskResult(
+        p = rule.post_a.prob_beats(rule.post_b)
+        return self._make_result(
             name,
             len(problems),
             len(problems),
-            post_a,
-            post_b,
-            p,
-            confidence=self.confidence,
+            rule,
+            SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
+            paired=self.paired,
         )
 
     # ------------------------------------------------------------------
@@ -566,8 +606,7 @@ class BayesianBenchmark:
             raise ValueError(f"Task '{name}' has no dataset. Pass dataset= to @bench.task().")
         factory = task_def.get("posterior_factory") or self._posterior_factory
         problems = list(dataset)
-        post_a = factory()
-        post_b = factory()
+        rule = self._new_rule(factory)
 
         problem_iter: Iterable[Any] = enumerate(problems)
         if verbose and _HAS_TQDM:
@@ -575,47 +614,22 @@ class BayesianBenchmark:
 
         for i, problem in problem_iter:
             val_a, val_b = fn(problem)
-            post_a.observe_one(val_a)
-            post_b.observe_one(val_b)
+            decision = rule.observe(val_a, val_b)
             tested = i + 1
 
-            if tested < self.min_samples:
-                continue
-
-            if self._is_non_discriminating(post_a, post_b):
-                p = post_a.prob_beats(post_b)
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    skipped=True,
-                    confidence=self.confidence,
+            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+                return self._make_result(
+                    name, tested, len(problems), rule, decision, paired=self.paired
                 )
 
-            stop, p = self._stopping(post_a, post_b)
-            if stop:
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    confidence=self.confidence,
-                )
-
-        p = post_a.prob_beats(post_b)
-        return TaskResult(
+        p = rule.post_a.prob_beats(rule.post_b)
+        return self._make_result(
             name,
             len(problems),
             len(problems),
-            post_a,
-            post_b,
-            p,
-            confidence=self.confidence,
+            rule,
+            SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
+            paired=self.paired,
         )
 
     async def _run_task_async(self, task_def: dict[str, Any]) -> TaskResult:
@@ -626,8 +640,7 @@ class BayesianBenchmark:
             raise ValueError(f"Task '{name}' has no dataset.")
         factory = task_def.get("posterior_factory") or self._posterior_factory
         problems = list(dataset)
-        post_a = factory()
-        post_b = factory()
+        rule = self._new_rule(factory)
 
         for i, problem in enumerate(problems):
             if asyncio.iscoroutinefunction(fn):
@@ -635,45 +648,20 @@ class BayesianBenchmark:
             else:
                 result = fn(problem)
             val_a, val_b = result
-            post_a.observe_one(val_a)
-            post_b.observe_one(val_b)
+            decision = rule.observe(val_a, val_b)
             tested = i + 1
 
-            if tested < self.min_samples:
-                continue
-
-            if self._is_non_discriminating(post_a, post_b):
-                p = post_a.prob_beats(post_b)
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    skipped=True,
-                    confidence=self.confidence,
+            if decision.terminal or (self.max_samples is not None and tested >= self.max_samples):
+                return self._make_result(
+                    name, tested, len(problems), rule, decision, paired=self.paired
                 )
 
-            stop, p = self._stopping(post_a, post_b)
-            if stop:
-                return TaskResult(
-                    name,
-                    tested,
-                    len(problems),
-                    post_a,
-                    post_b,
-                    p,
-                    confidence=self.confidence,
-                )
-
-        p = post_a.prob_beats(post_b)
-        return TaskResult(
+        p = rule.post_a.prob_beats(rule.post_b)
+        return self._make_result(
             name,
             len(problems),
             len(problems),
-            post_a,
-            post_b,
-            p,
-            confidence=self.confidence,
+            rule,
+            SequentialDecision(DecisionStatus.INCONCLUSIVE, p, "dataset exhausted"),
+            paired=self.paired,
         )
