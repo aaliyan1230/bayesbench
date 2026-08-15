@@ -70,6 +70,51 @@ class CalibrationReport:
         return "\n".join(rows)
 
 
+@dataclass
+class EffectSweepPoint:
+    """One row of an effect-size sweep: decision quality vs effect size."""
+
+    acc_a: float
+    acc_b: float
+    min_samples: int
+    confidence: float
+    n_runs: int
+    item_sd: float
+    false_winner_rate: float
+    correct_winner_rate: float
+    inconclusive_rate: float
+    expected_samples: float
+    possible_max_samples: int
+
+    def __str__(self) -> str:
+        return (
+            f"d={self.acc_a - self.acc_b:+.2f} min={self.min_samples:>3} "
+            f"conf={self.confidence:.2f}  false={self.false_winner_rate:.2%}  "
+            f"correct={self.correct_winner_rate:.2%}  "
+            f"incon={self.inconclusive_rate:.2%}  "
+            f"E[n]={self.expected_samples:.1f}/{self.possible_max_samples}"
+        )
+
+
+@dataclass
+class EffectSweepReport:
+    """Results of an effect-size sweep."""
+
+    params_label: str
+    points: list[EffectSweepPoint]
+
+    def format_table(self) -> str:
+        header = f"{'d':>6} {'min_s':>6} {'false':>7} {'correct':>8} " f"{'incon':>7} {'E[n]':>7}"
+        rows = [header, "-" * len(header)]
+        for p in self.points:
+            rows.append(
+                f"{p.acc_a - p.acc_b:>+6.2f} {p.min_samples:>6} "
+                f"{p.false_winner_rate:>7.1%} {p.correct_winner_rate:>8.1%} "
+                f"{p.inconclusive_rate:>7.1%} {p.expected_samples:>7.1f}"
+            )
+        return "\n".join(rows)
+
+
 # ---------------------------------------------------------------------------
 # Exact enumeration
 # ---------------------------------------------------------------------------
@@ -158,6 +203,7 @@ def simulate_pairwise(
     min_samples: int = 3,
     max_samples: int = 500,
     posterior_factory: Callable[[], Posterior] | None = None,
+    item_sd: float = 0.0,
 ) -> dict[str, Any]:
     """Monte Carlo simulation of the pairwise stopping policy.
 
@@ -173,7 +219,15 @@ def simulate_pairwise(
         confidence: Stopping confidence threshold.
         skip_threshold: Non-discrimination skip window.
         min_samples: Minimum evaluations before any early stopping.
+        max_samples: Budget cap per run; runs past it are inconclusive.
         posterior_factory: Posterior factory (default BetaPosterior).
+        item_sd: Standard deviation of shared item difficulty. When > 0, each
+                 step draws a shared difficulty z ~ N(0, item_sd) and both
+                 models answer item i with P(correct) = clip(acc + z). This
+                 induces positive correlation between the two outcome streams,
+                 modeling paired evaluation on shared items. The marginal
+                 expectation of each stream approximates ``true_acc`` (exact
+                 when clipping never binds).
 
     Returns:
         Dict with decision counts, rates, and per-run samples drawn.
@@ -201,8 +255,14 @@ def simulate_pairwise(
         post_b = factory()
 
         for j in range(max_samples):
-            val_a = rng.random() < true_acc_a
-            val_b = rng.random() < true_acc_b
+            if item_sd > 0.0:
+                z = rng.normal(0.0, item_sd)
+                p_a = float(np.clip(true_acc_a + z, 1e-4, 1.0 - 1e-4))
+                p_b = float(np.clip(true_acc_b + z, 1e-4, 1.0 - 1e-4))
+            else:
+                p_a, p_b = true_acc_a, true_acc_b
+            val_a = rng.random() < p_a
+            val_b = rng.random() < p_b
             post_a.observe_one(val_a)
             post_b.observe_one(val_b)
             tested = j + 1
@@ -241,6 +301,7 @@ def simulate_pairwise(
         "runs": n,
         "true_acc_a": true_acc_a,
         "true_acc_b": true_acc_b,
+        "item_sd": item_sd,
         "params": {
             "confidence": confidence,
             "skip_threshold": skip_threshold,
@@ -369,3 +430,84 @@ def calibrate_sweep(
 
     label = f"true_A={true_acc_a:.2f} true_B={true_acc_b:.2f} " f"conf={confidence:.2f} n={n_runs}"
     return CalibrationReport(params_label=label, points=points)
+
+
+def effect_size_sweep(
+    effects: Sequence[tuple[float, float]] = (
+        (0.50, 0.50),
+        (0.55, 0.50),
+        (0.60, 0.50),
+        (0.70, 0.50),
+        (0.90, 0.50),
+    ),
+    min_samples_grid: Sequence[int] = (3, 5, 10, 20, 30, 50, 100),
+    confidence: float = 0.95,
+    skip_threshold: float = 1.0,
+    n_runs: int = 2_000,
+    max_samples: int = 200,
+    item_sd: float = 0.0,
+    seed: int = 42,
+) -> EffectSweepReport:
+    """Sweep effect sizes and min_samples: decision quality vs cost.
+
+    For each (acc_a, acc_b) effect size and each min_samples, runs
+    :func:`simulate_pairwise` and reports:
+
+    - false_winner_rate: winner opposite the true ordering (under the null,
+      any winner is false),
+    - correct_winner_rate: winner matching the true ordering,
+    - inconclusive_rate: budget exhausted without a decision,
+    - expected_samples: mean samples consumed.
+
+    Set ``skip_threshold=1.0`` to disable the skip heuristic, isolating the
+    confidence-based stopping rule.
+    """
+    rng = np.random.default_rng(seed)
+    points: list[EffectSweepPoint] = []
+
+    for acc_a, acc_b in effects:
+        for min_s in min_samples_grid:
+            result = simulate_pairwise(
+                n=n_runs,
+                true_acc_a=acc_a,
+                true_acc_b=acc_b,
+                confidence=confidence,
+                skip_threshold=skip_threshold,
+                min_samples=min_s,
+                max_samples=max_samples,
+                item_sd=item_sd,
+                rng=rng,
+            )
+
+            total = sum(result[k] for k in ("winner_a", "winner_b", "skipped", "inconclusive"))
+            false_rate = result["false_decisions"] / total if total > 0 else 0.0
+            correct_rate = 0.0
+            if acc_a > acc_b:
+                correct_rate = result["winner_a"] / total if total > 0 else 0.0
+            elif acc_b > acc_a:
+                correct_rate = result["winner_b"] / total if total > 0 else 0.0
+            incon_rate = result["inconclusive"] / total if total > 0 else 0.0
+
+            points.append(
+                EffectSweepPoint(
+                    acc_a=acc_a,
+                    acc_b=acc_b,
+                    min_samples=min_s,
+                    confidence=confidence,
+                    n_runs=n_runs,
+                    item_sd=item_sd,
+                    false_winner_rate=false_rate,
+                    correct_winner_rate=correct_rate,
+                    inconclusive_rate=incon_rate,
+                    expected_samples=(
+                        float(np.mean(result["samples_drawn"])) if result["samples_drawn"] else 0.0
+                    ),
+                    possible_max_samples=max_samples,
+                )
+            )
+
+    label = (
+        f"effects={effects} conf={confidence:.2f} n={n_runs} "
+        f"item_sd={item_sd} skip_threshold={skip_threshold}"
+    )
+    return EffectSweepReport(params_label=label, points=points)
