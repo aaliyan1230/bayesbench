@@ -14,7 +14,11 @@ from typing import Any
 
 import numpy as np
 
-from .decision import DecisionStatus, PosteriorThresholdRule
+from .decision import (
+    ConfidenceSequenceRule,
+    DecisionStatus,
+    PosteriorThresholdRule,
+)
 from .posteriors.base import Posterior
 from .posteriors.beta import BetaPosterior
 
@@ -298,6 +302,82 @@ def simulate_pairwise(
             "confidence": confidence,
             "skip_threshold": skip_threshold,
             "min_samples": min_samples,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Order-sensitivity test
+# ---------------------------------------------------------------------------
+
+
+def simulate_pairwise_cs(
+    n: int = 10_000,
+    true_acc_a: float = 0.5,
+    true_acc_b: float = 0.5,
+    alpha: float = 0.05,
+    min_samples: int = 1,
+    max_samples: int = 500,
+    rng: np.random.Generator | int | None = None,
+) -> dict[str, Any]:
+    """Monte Carlo simulation of the confidence-sequence stopping rule.
+
+    Same protocol as :func:`simulate_pairwise` but driven by
+    :class:`~bayesbench.decision.ConfidenceSequenceRule`, which guarantees
+    P(wrong winner at any stopping time) <= alpha by Ville's inequality.
+    """
+    if isinstance(rng, int):
+        rng = np.random.default_rng(rng)
+    elif rng is None:
+        rng = np.random.default_rng()
+
+    winner_a = 0
+    winner_b = 0
+    equivalent = 0
+    inconclusive = 0
+    false_decisions = 0
+    samples_drawn: list[int] = []
+
+    for _ in range(n):
+        rule = ConfidenceSequenceRule(alpha=alpha, min_samples=min_samples)
+        for j in range(max_samples):
+            val_a = rng.random() < true_acc_a
+            val_b = rng.random() < true_acc_b
+            dec = rule.observe(val_a, val_b)
+            tested = j + 1
+
+            if dec.status is DecisionStatus.INCONCLUSIVE:
+                continue
+            if dec.status is DecisionStatus.EQUIVALENT:
+                equivalent += 1
+            elif dec.status is DecisionStatus.WINNER_A:
+                winner_a += 1
+                if true_acc_a <= true_acc_b:
+                    false_decisions += 1
+            else:
+                winner_b += 1
+                if true_acc_b <= true_acc_a:
+                    false_decisions += 1
+            samples_drawn.append(tested)
+            break
+        else:
+            inconclusive += 1
+            samples_drawn.append(max_samples)
+
+    return {
+        "winner_a": winner_a,
+        "winner_b": winner_b,
+        "equivalent": equivalent,
+        "inconclusive": inconclusive,
+        "samples_drawn": samples_drawn,
+        "false_decisions": false_decisions,
+        "runs": n,
+        "true_acc_a": true_acc_a,
+        "true_acc_b": true_acc_b,
+        "params": {
+            "alpha": alpha,
+            "min_samples": min_samples,
+            "max_samples": max_samples,
         },
     }
 

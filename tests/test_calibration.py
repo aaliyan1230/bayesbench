@@ -19,6 +19,7 @@ from bayesbench.calibration import (
     enumerate_binary_outcomes,
     simulate_order_sensitivity,
     simulate_pairwise,
+    simulate_pairwise_cs,
 )
 
 # ---------------------------------------------------------------------------
@@ -342,6 +343,44 @@ class TestEffectSizeSweep:
         s = str(p)
         assert "+0.10" in s
         assert "min=" in s
+
+
+# ---------------------------------------------------------------------------
+# Confidence-sequence simulation
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceSequenceSimulation:
+    def test_null_false_rate_below_alpha(self):
+        result = simulate_pairwise_cs(
+            n=800,
+            true_acc_a=0.5,
+            true_acc_b=0.5,
+            alpha=0.05,
+            max_samples=80,
+            rng=7,
+        )
+        total = sum(result[k] for k in ("winner_a", "winner_b", "equivalent", "inconclusive"))
+        false_rate = result["false_decisions"] / total if total > 0 else 0.0
+        assert false_rate <= 0.05, f"any-time false rate {false_rate:.2%} exceeds alpha"
+
+    def test_reproducible_with_seed(self):
+        r1 = simulate_pairwise_cs(n=200, rng=42)
+        r2 = simulate_pairwise_cs(n=200, rng=42)
+        assert r1["winner_a"] == r2["winner_a"]
+        assert r1["winner_b"] == r2["winner_b"]
+
+    def test_detects_strong_effect(self):
+        result = simulate_pairwise_cs(
+            n=300,
+            true_acc_a=0.9,
+            true_acc_b=0.5,
+            alpha=0.05,
+            max_samples=200,
+            rng=11,
+        )
+        total = sum(result[k] for k in ("winner_a", "winner_b", "equivalent", "inconclusive"))
+        assert result["winner_a"] / total > 0.9
 
 
 # ---------------------------------------------------------------------------
